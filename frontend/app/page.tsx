@@ -13,35 +13,54 @@ export default function LandingPage() {
 
   useEffect(() => {
     setMounted(true);
-    // Hero Animation
-    gsap.fromTo(
-      ".hero-element",
-      { y: 50, opacity: 0 },
-      { y: 0, opacity: 1, duration: 1, stagger: 0.2, ease: "power3.out" }
-    );
+    
+    // Scoped context for hero elements
+    const heroCtx = gsap.context(() => {
+      gsap.fromTo(
+        ".hero-element",
+        { y: 50, opacity: 0 },
+        { y: 0, opacity: 1, duration: 1, stagger: 0.2, ease: "power3.out" }
+      );
+    }, heroRef);
 
-    // Floating Icons Animation
-    if (floatingIconsRef.current) {
-      const icons = (floatingIconsRef.current as HTMLElement).children;
-      gsap.to(icons, {
-        y: "random(-20, 20)",
-        x: "random(-20, 20)",
-        rotation: "random(-15, 15)",
-        duration: "random(2, 4)",
-        repeat: -1,
-        yoyo: true,
-        ease: "sine.inOut",
-        stagger: 0.1,
-      });
-    }
+    // Scoped context for feature cards
+    const cardsCtx = gsap.context(() => {
+      gsap.fromTo(
+        ".feature-card",
+        { y: 50, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.8, stagger: 0.1, ease: "power2.out", delay: 0.5 }
+      );
+    }, cardsRef);
 
-    // Cards Animation
-    gsap.fromTo(
-      ".feature-card",
-      { y: 50, opacity: 0 },
-      { y: 0, opacity: 1, duration: 0.8, stagger: 0.1, ease: "power2.out", delay: 0.5 }
-    );
+    return () => {
+      heroCtx.revert();
+      cardsCtx.revert();
+    };
   }, []);
+
+
+  // Separate effect for floating icons because they depend on 'mounted' state rendering
+  useEffect(() => {
+    if (mounted && floatingIconsRef.current) {
+      const ctx = gsap.context(() => {
+        // Use the scoped selector ".floating-icon" instead of accessing .children directly.
+        // In GSAP 3+, this selector is automatically scoped to the floatingIconsRef context,
+        // making it more robust against React's rendering lifecycle.
+        gsap.to(".floating-icon", {
+          y: "random(-20, 20)",
+          x: "random(-20, 20)",
+          rotation: "random(-15, 15)",
+          duration: "random(2, 4)",
+          repeat: -1,
+          yoyo: true,
+          ease: "sine.inOut",
+          stagger: 0.1,
+        });
+      }, floatingIconsRef);
+      return () => ctx.revert();
+    }
+  }, [mounted]);
+
 
   const icons = [
     Activity, Terminal, Database, BarChart2, Zap, Shield, Layout,

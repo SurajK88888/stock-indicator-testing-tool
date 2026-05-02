@@ -19,6 +19,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import create_db_and_tables
+import sentry_sdk
+
+sentry_sdk.init(
+    dsn="", # Add your DSN here
+    traces_sample_rate=1.0,
+    profiles_sample_rate=1.0,
+)
 
 
 @asynccontextmanager
@@ -67,7 +74,10 @@ def read_root():
 
 
 # Import routers AFTER app is defined to prevent circular import issues
-from services import ingestion, validator  # noqa: E402
+from services import ingestion, validator, results, admin, debug  # noqa: E402
 
 app.include_router(ingestion.router)
 app.include_router(validator.router)
+app.include_router(results.router)
+app.include_router(admin.router)
+app.include_router(debug.router)

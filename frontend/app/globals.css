@@ -32,9 +32,9 @@
   --color-surface-container-low: #131b2e;
   --color-surface-container-lowest: #060e20;
   
-  --font-headline: "Poppins", "Inter", sans-serif;
-  --font-body: "Inter", sans-serif;
-  --font-label: "Inter", sans-serif;
+  --font-headline: var(--font-lexend), "Poppins", sans-serif;
+  --font-body: var(--font-lexend), "Inter", sans-serif;
+  --font-label: var(--font-lexend), "Inter", sans-serif;
 }
 
 @layer base {
@@ -76,3 +76,75 @@ h1, h2, h3, .brand-font {
   color: rgba(78, 222, 163, 0.05);
   font-size: 1.2rem;
 }
+
+/* Custom Premium Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-surface-container-lowest);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(to bottom, rgba(78, 222, 163, 0.2), rgba(78, 222, 163, 0.1));
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+  box-shadow: 0 0 15px var(--color-primary);
+}
+
+/* For Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(78, 222, 163, 0.2) var(--color-surface-container-lowest);
+}
+
+/* Premium Date & Time Picker Aesthetics */
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"] {
+  color-scheme: dark;
+  font-family: var(--font-body);
+  letter-spacing: 0.025em;
+  font-weight: 500;
+}
+
+/* Custom Calendar/Clock Icon Color to Match Theme */
+::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%234edea3" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>');
+  filter: drop-shadow(0 0 2px rgba(78, 222, 163, 0.5));
+  opacity: 0.7;
+  transition: all 0.3s ease;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background-color: rgba(78, 222, 163, 0.1);
+  transform: scale(1.1);
+}
+
+/* Improving Input Text Clarity */
+input[type="date"]::placeholder,
+input[type="time"]::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+input[type="date"]:focus,
+input[type="time"]:focus {
+  outline: none;
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 1px rgba(78, 222, 163, 0.2);
+}
+
+
+

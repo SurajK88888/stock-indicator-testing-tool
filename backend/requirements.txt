@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+polars
+pandas
+python-multipart
+reportlab
+plotly
+jinja2
+sentry-sdk[fastapi]
+fastexcel
+openpyxl

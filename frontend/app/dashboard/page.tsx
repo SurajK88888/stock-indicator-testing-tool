@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
-import { Upload, Database, Settings, BarChart2, Trash2, Play, FileText, Info } from "lucide-react";
+import { Upload, Database, Settings, BarChart2, Trash2, Play, FileText, Info, X } from "lucide-react";
 
 
 
@@ -251,6 +251,23 @@ export default function Dashboard() {
     }
   };
 
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+    setUploadStatus("");
+    setPreviewData([]);
+    setUniqueDates([]);
+    setUniqueTimes([]);
+    setOptionsHeaders([]);
+    setIndicatorHeaders([]);
+    setSpotHeaders([]);
+
+    // Reset date/time filters to ensure a clean state for the next file
+    const dateReset = { startDate: "", endDate: "", startTime: "", endTime: "" };
+    setOptionsMap(prev => ({ ...prev, ...dateReset }));
+    setIndicatorMap(prev => ({ ...prev, ...dateReset }));
+    setSpotMap(prev => ({ ...prev, ...dateReset }));
+  };
+
   // FIX: real POST /api/ingest — no more setTimeout mock
   const handleIngestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -296,7 +313,6 @@ export default function Dashboard() {
     if (timeframe) fd.append("timeframe", timeframe);
     if (importType === "indicator" && indicatorMap.updatedBy) fd.append("updatedBy", indicatorMap.updatedBy);
     if (importType === "options" && optionsMap.updatedBy) fd.append("updatedBy", optionsMap.updatedBy);
-    if (importType === "options" && optionsMap.script) fd.append("manualScript", optionsMap.script);
 
     try {
       const res = await fetch("http://127.0.0.1:8000/api/ingest", { method: "POST", body: fd });
@@ -355,7 +371,6 @@ export default function Dashboard() {
     if (timeframePrev) fd.append("timeframe", timeframePrev);
     if (importType === "indicator" && indicatorMap.updatedBy) fd.append("updatedBy", indicatorMap.updatedBy);
     if (importType === "options" && optionsMap.updatedBy) fd.append("updatedBy", optionsMap.updatedBy);
-    if (importType === "options" && optionsMap.script) fd.append("manualScript", optionsMap.script);
 
 
     try {
@@ -789,11 +804,37 @@ export default function Dashboard() {
                         {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} Data — Header Mapping
                       </h3>
                     </div>
-                    <div className="bg-surface-container-low p-3 rounded-lg border border-white/10 flex flex-col justify-center border-dashed hover:border-primary/50 transition-colors w-full md:w-auto">
-                      <label className="block text-xs font-bold mb-2 text-slate-300 cursor-pointer flex items-center gap-2">
-                        <FileText size={14} className="text-primary" /> Select {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} File
-                      </label>
-                      <input type="file" onChange={handleFileChange} className="text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer" />
+                    <div className="bg-surface-container-low p-3 rounded-lg border border-white/10 flex flex-col justify-center border-dashed hover:border-primary/50 transition-colors w-full md:w-auto min-w-[240px]">
+                      {!selectedFile ? (
+                        <>
+                          <label className="block text-xs font-bold mb-2 text-slate-300 cursor-pointer flex items-center gap-2">
+                            <FileText size={14} className="text-primary" /> Select {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} File
+                          </label>
+                          <input type="file" onChange={handleFileChange} className="text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer w-full" />
+                        </>
+                      ) : (
+                        <div className="flex items-center justify-between gap-4 py-1">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <div className="bg-primary/10 p-1.5 rounded-lg">
+                              <FileText size={16} className="text-primary" />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-xs font-bold text-white truncate max-w-[180px]" title={selectedFile.name}>
+                                {selectedFile.name}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-medium">Ready to map</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleRemoveFile}
+                            className="p-1.5 rounded-full bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-all flex-shrink-0"
+                            title="Remove file"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -985,13 +1026,7 @@ export default function Dashboard() {
 
                     {importType === "options" && (
                       <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="flex flex-col gap-1 w-full animate-in slide-in-from-left-2">
-                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
-                            Manual Script  <InfoTooltip text="Fallback: Specify strike if not auto-detectable from filename." />
-                          </label>
-                          <input type="text" value={optionsMap.script} onChange={(e) => setOptionsMap({ ...optionsMap, script: e.target.value })}
-                            className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50" placeholder="e.g. NIFTY_19500_CE" />
-                        </div>
+                        {renderHeaderDropdown(optionsMap.script, v => setOptionsMap({ ...optionsMap, script: v }), "Script Column", activeHeaders, "Map this to the 'Script' column in your file (e.g. 24750).")}
 
                         <div className="flex flex-col gap-1 w-full">
                           <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Type</label>
@@ -1055,8 +1090,8 @@ export default function Dashboard() {
                 </form>
               )}
 
-              {/* Real-time Filtered Preview Table */}
-              {!isUploading && previewData.length > 0 && (
+              {/* Real-time Filtered Preview Table — requires active file */}
+              {!isUploading && selectedFile && previewData.length > 0 && (
                 <div className="mt-8 animate-in slide-in-from-bottom-4">
                   <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                     <Database size={16} className="text-primary" /> Live Data Preview

@@ -300,7 +300,16 @@ async def ingest_data(
 
     # Level 1/2/3 Script Logic Fallback & Phase 1 Smart Parsing
     if dataType == "options":
-        if "script" not in df.columns:
+        # User requirement: Store script as integer if possible for calculations.
+        # Clean numeric script values (remove ".0" from float inference)
+        if "script" in df.columns:
+            df = df.with_columns(
+                pl.col("script").cast(pl.Utf8)
+                .str.replace(r"\.0$", "", literal=False)
+                .alias("script")
+            )
+        else:
+            # Fallback if no script column is mapped
             if manualScript and manualScript.strip():
                 script_val = manualScript.strip()
             else:
@@ -365,11 +374,11 @@ async def ingest_data(
                 existing_keys = {(r[0], r[1], r[2], r[3]) for r in existing_records}
                 
             elif dataType == "options":
-                statement = select(OptionsData.dateTime, OptionsData.stock, OptionsData.script).where(
+                statement = select(OptionsData.dateTime, OptionsData.stock, OptionsData.script, OptionsData.type, OptionsData.expiry).where(
                     OptionsData.dateTime >= min_dt, OptionsData.dateTime <= max_dt
                 )
                 existing_records = session.exec(statement).all()
-                existing_keys = {(r[0], r[1], r[2]) for r in existing_records}
+                existing_keys = {(r[0], r[1], r[2], r[3], r[4]) for r in existing_records}
     except Exception as e:
         return {"error": f"Failed during duplicate check query: {str(e)}"}
 
@@ -384,7 +393,7 @@ async def ingest_data(
         if dataType == "indicator":
             key = (dt, record.get("stock"), record.get("timeframe"), record.get("indicatorName"))
         elif dataType == "options":
-            key = (dt, record.get("stock"), record.get("script"))
+            key = (dt, record.get("stock"), record.get("script"), record.get("type"), record.get("expiry"))
         else:
             key = None
             

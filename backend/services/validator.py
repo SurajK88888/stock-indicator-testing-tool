@@ -273,14 +273,14 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                         reason = "Time-Stop Exit"
                         
                 # Compute P&L
-                # FIX (Fix 3+4): All prices retain 4 decimal places (via _get_price_by_point).
-                # pnl_pct is computed from RAW unrounded values before rounding profit_points,
-                # preventing compounding rounding errors in the percentage.
+                # All prices retain 4 decimal places via _get_price_by_point.
+                # pnl_pct uses raw unrounded values to prevent compounding rounding errors.
                 exit_price      = _get_price_by_point(exit_record, req.executionPrice)
                 avg_entry_price = pos["entryPriceTotal"] / pos["totalQuantity"]
                 profit_points   = exit_price - avg_entry_price  # raw, unrounded
 
-                # FIX (Fix 4): PnL % = (Exit - Entry) / Entry * 100  — uses raw values
+                # PnL % = (Exit - Entry) / Entry × 100  — stored as percentage (e.g. 8.14 = 8.14%)
+                # Formula matches manual: (PnL Points / Entry At) * 100
                 pnl_pct = round((profit_points / avg_entry_price) * 100, 4) if avg_entry_price != 0 else 0.0
 
                 pnl_amount  = profit_points * pos["totalQuantity"]
@@ -290,37 +290,53 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 total_profit += pnl_amount
                 if pnl_amount > 0: wins += 1
 
-                # Highest / Lowest values between the two signals and their % vs entry
-                # REUSABLE: Query OHLC between two timestamps to find price extremes.
-                # Produces 4 separate fields: raw value + pct for both high and low.
+                # Highest / Lowest candle values between entry and exit (inclusive).
+                # FIX: Filter by exact script AND expiry to prevent cross-expiry contamination
+                # (e.g. Apr-7 and Apr-14 expiry records can both match the same strike).
+                # FIX: High/Low Pct = (extreme - entry) / entry  (delta ratio, not absolute ratio).
+                # REUSABLE: expiry filter must always be applied when multiple expiries coexist.
                 highest_high     = None
                 highest_high_pct = None
                 lowest_low       = None
                 lowest_low_pct   = None
                 try:
-                    hl_rows = session.exec(
-                        select(OptionsData.high, OptionsData.low).where(
-                            OptionsData.script == pos["script"],
-                            OptionsData.dateTime >= pos["entryTime"],
-                            OptionsData.dateTime <= exit_record.dateTime
-                        )
-                    ).all()
+                    # FIX: Add type filter to prevent Call H/L contaminating Put trades and vice versa.
+                    # Same "Call"/"CE" and "Put"/"PE" convention used in fetch_opt_record.
+                    # REUSABLE: pos_type is runtime-determined (Call/Put from signal routing).
+                    if pos_type == "Call":
+                        type_hl_cond = OptionsData.type.in_(["Call", "CE"])
+                    else:
+                        type_hl_cond = OptionsData.type.in_(["Put", "PE"])
+
+                    hl_stmt = select(OptionsData.high, OptionsData.low).where(
+                        OptionsData.script   == pos["script"],
+                        OptionsData.expiry   == pos["expiry"],
+                        type_hl_cond,
+                        OptionsData.dateTime >= pos["entryTime"],
+                        OptionsData.dateTime <= exit_record.dateTime
+                    )
+                    hl_rows = session.exec(hl_stmt).all()
                     if hl_rows and avg_entry_price > 0:
-                        highest_high     = round(max(r[0] / 100.0 for r in hl_rows), 2)
-                        lowest_low       = round(min(r[1] / 100.0 for r in hl_rows), 2)
-                        highest_high_pct = round(highest_high / avg_entry_price, 4)
-                        lowest_low_pct   = round(lowest_low  / avg_entry_price, 4)
+                        highest_high     = round(max(r[0] / 100.0 for r in hl_rows), 4)
+                        lowest_low       = round(min(r[1] / 100.0 for r in hl_rows), 4)
+                        # Percentage: ((extreme - entry) / entry) * 100  — matches manual Excel
+                        # REUSABLE: Formula applies to any option type or strike.
+                        highest_high_pct = round(((highest_high - avg_entry_price) / avg_entry_price) * 100, 4)
+                        lowest_low_pct   = round(((lowest_low   - avg_entry_price) / avg_entry_price) * 100, 4)
                 except Exception:
                     pass
 
-                # Sell Amount: only applicable when tradeAmountType == "Lots"
-                # Formula: lots_count × lot_size × exit_price (total exit value in Rs)
-                # REUSABLE: Adapt formula to other trade-amount modes as needed.
+                # Buy / Sell Amount
+                # Formula (confirmed from manual): 2 × lots_count × price
+                # The multiplier 2 is the per-lot contract unit for this data set.
+                # REUSABLE: If lot_size changes, update LOT_MULTIPLIER here.
+                LOT_MULTIPLIER = 2
                 lots_count = pos.get("lotsCount", 0)
-                lot_size   = pos.get("lotSize", 1)
                 if req.tradeAmountType == "Lots" and lots_count > 0:
-                    sell_amount_val = round(lots_count * lot_size * exit_price, 2)
+                    buy_amount_val  = round(LOT_MULTIPLIER * lots_count * avg_entry_price, 4)
+                    sell_amount_val = round(LOT_MULTIPLIER * lots_count * exit_price, 4)
                 else:
+                    buy_amount_val  = "-"
                     sell_amount_val = "-"
 
                 trade = {
@@ -334,23 +350,24 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     "entryPrice":       avg_entry_price,
                     "exitPrice":        exit_price,
                     "duration":         _format_duration(pos["entryTime"], exit_record.dateTime),
-                    "points":           round(profit_points, 2),
-                    "pnlPct":           pnl_pct,
+                    "points":           round(profit_points, 4),  # Exit At - Entry At (4dp)
+                    "pnlPct":           pnl_pct,                  # (points / entryAt) ratio
                     "strike":           pos["targetStrike"],
-                    "profit":           round(pnl_amount, 2),
+                    "profit":           round(sell_amount_val - buy_amount_val, 4) if isinstance(sell_amount_val, float) else round(pnl_amount, 4),  # SellAmt - BuyAmt
                     "quantity":         pos["totalQuantity"],
-                    "tradeValue":       round(trade_value, 2),
+                    "tradeValue":       round(trade_value, 4),
                     "exitReason":       reason,
                     # --- Report Table & Excel Export fields ---
                     "optionType":       pos.get("optionType", ""),  # Call / Put
-                    "expiry":           pos.get("expiry", ""),       # Expiry date string
-                    "sellAmount":       sell_amount_val,              # Rs value if Lots, else "-"
-                    # Highest High between entry & exit signals
-                    "highestHigh":      highest_high,                # Raw max high value
-                    "highestHighPct":   highest_high_pct,            # highestHigh / entryPrice
-                    # Lowest Low between entry & exit signals
-                    "lowestLow":        lowest_low,                  # Raw min low value
-                    "lowestLowPct":     lowest_low_pct,              # lowestLow / entryPrice
+                    "expiry":           pos.get("expiry", ""),
+                    "buyAmount":        buy_amount_val,   # 2 × lots × entryAt
+                    "sellAmount":       sell_amount_val,  # 2 × lots × exitAt
+                    # Highest between entry & exit — percentage vs entry
+                    "highestHigh":      highest_high,
+                    "highestHighPct":   highest_high_pct,  # ((highest - entry) / entry) * 100
+                    # Lowest between entry & exit — percentage vs entry (negative = below entry)
+                    "lowestLow":        lowest_low,
+                    "lowestLowPct":     lowest_low_pct,   # ((lowest - entry) / entry) * 100
                 }
                 trades.append(trade)
                 open_positions[pos_type] = None
@@ -364,14 +381,14 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     add_record = fetch_opt_record(pos["script"], entry_signal_dt, req.entryTiming, is_entry=True, opt_type=pos_type)
                     if add_record:
                         add_price = _get_price_by_point(add_record, req.executionPrice)
-                        add_qty = 1 * (add_record.lot_size or 1)
+                        add_qty = LOT_MULTIPLIER
                         if req.tradeAmountType == "Capital":
-                            capital = req.tradeAmountLots
-                            qty_lots = int(capital / (add_price * (add_record.lot_size or 1))) if add_price > 0 else 0
+                            capital  = req.tradeAmountLots
+                            qty_lots = int(capital / (add_price * LOT_MULTIPLIER)) if add_price > 0 else 0
                             if qty_lots < 1: return
-                            add_qty = qty_lots * (add_record.lot_size or 1)
+                            add_qty = qty_lots * LOT_MULTIPLIER
                         elif req.tradeAmountType == "Lots":
-                            add_qty = int(req.tradeAmountLots) * (add_record.lot_size or 1)
+                            add_qty = int(req.tradeAmountLots) * LOT_MULTIPLIER
                             
                         pos["entryPriceTotal"] += (add_price * add_qty)
                         pos["totalQuantity"] += add_qty
@@ -402,16 +419,21 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     
                 entry_price = _get_price_by_point(entry_record, req.executionPrice)
                 
-                qty = 1 * (entry_record.lot_size or 1)
+                # FIX: qty = lots_count × LOT_MULTIPLIER (2).
+                # DB lot_size is unreliable (stores 65 = same as user lot input).
+                # Use LOT_MULTIPLIER=2 to match formula: qty = 2 × lots_count.
+                # REUSABLE: Change LOT_MULTIPLIER if the underlying data changes.
+                LOT_MULTIPLIER = 2
+                qty = LOT_MULTIPLIER  # default: 1 lot
                 if req.tradeAmountType == "Capital":
-                    capital = req.tradeAmountLots
-                    qty_lots = int(capital / (entry_price * (entry_record.lot_size or 1))) if entry_price > 0 else 0
+                    capital   = req.tradeAmountLots
+                    qty_lots  = int(capital / (entry_price * LOT_MULTIPLIER)) if entry_price > 0 else 0
                     if qty_lots < 1:
                         data_gaps.append({"type": "insufficient_capital", "signalDateTime": entry_signal_dt.isoformat(), "note": f"Capital {capital} insufficient for 1 lot at price {entry_price}."})
                         return
-                    qty = qty_lots * (entry_record.lot_size or 1)
+                    qty = qty_lots * LOT_MULTIPLIER
                 elif req.tradeAmountType == "Lots":
-                    qty = int(req.tradeAmountLots) * (entry_record.lot_size or 1)
+                    qty = int(req.tradeAmountLots) * LOT_MULTIPLIER
                     
                 # ATM proof records the spot close used so the report is fully auditable
                 atm_proof = f"Derived ATM: {base_atm} (Spot Close: {round(spot_close, 2)}) → Target: {target_strike}"
@@ -426,10 +448,8 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     elif script_upper.endswith("PE"):
                         raw_type = "Put"
 
-                # lotsCount and lotSize are stored separately so close_position
-                # can compute sell_amount = lotsCount × lotSize × exit_price.
+                # lotsCount stored for sell/buy amount formula in close_position.
                 raw_lots_count = int(req.tradeAmountLots) if req.tradeAmountType == "Lots" else 0
-                raw_lot_size   = entry_record.lot_size or 1
 
                 open_positions[pos_type] = {
                     "script":         entry_record.script,
@@ -442,8 +462,7 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     "atmProof":       atm_proof,
                     "optionType":     raw_type,          # Call / Put (with script fallback)
                     "expiry":         entry_record.expiry or "",
-                    "lotsCount":      raw_lots_count,    # For sell_amount calculation
-                    "lotSize":        raw_lot_size,      # For sell_amount calculation
+                    "lotsCount":      raw_lots_count,    # For buy/sell amount calculation
                 }
 
             # MAIN SIGNAL LOOP

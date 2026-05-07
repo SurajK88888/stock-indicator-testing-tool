@@ -1,7 +1,7 @@
 import json
 import uuid
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -36,52 +36,47 @@ class ValidateRequest(BaseModel):
 
 
 def _get_price_by_point(record: OptionsData, point: str) -> float:
-    """Returns the correct OHLC price based on executionPrice selection, divided by 100."""
+    """
+    Returns the correct OHLC price based on executionPrice selection.
+    FIX (Fix 3): Returns 4 decimal places to preserve sub-cent precision
+    (e.g. 283.1625 instead of 283.16).
+    REUSABLE: Centralised price retrieval — all trade P&L flows through here.
+    """
     mapping = {
         "Open": record.open,
         "High": record.high,
         "Low": record.low,
         "Close": record.close,
     }
-    return mapping.get(point, record.close) / 100.0
+    return round(mapping.get(point, record.close) / 100.0, 4)
 
 
-def _get_derived_anchor(session: Session, stock: str, dt: datetime):
-    stmt = select(OptionsData.strike, OptionsData.type, OptionsData.close).where(
-        OptionsData.stock == stock,
-        OptionsData.dateTime == dt,
-        OptionsData.strike.is_not(None)
-    )
-    records = session.exec(stmt).all()
-    if not records:
-        # CRITICAL: Always return a tuple so callers can unpack (base_atm, is_single_strike) safely.
-        # Returning bare None causes "cannot unpack non-iterable NoneType" crash.
-        return None, False
-        
-    strike_prices = {}
-    for r in records:
-        strike, typ, close = r
-        if strike not in strike_prices:
-            strike_prices[strike] = {"Call": None, "Put": None}
-        if typ and typ.lower() in ("call", "ce"):
-            strike_prices[strike]["Call"] = close
-        elif typ and typ.lower() in ("put", "pe"):
-            strike_prices[strike]["Put"] = close
-            
-    min_diff = float('inf')
-    atm_strike = None
-    
-    if len(strike_prices) == 1:
-        return list(strike_prices.keys())[0], True
-        
-    for strike, prices in strike_prices.items():
-        if prices["Call"] is not None and prices["Put"] is not None:
-            diff = abs(prices["Call"] - prices["Put"])
-            if diff < min_diff:
-                min_diff = diff
-                atm_strike = strike
-                
-    return atm_strike, False
+def _tf_delta(timeframe: str) -> timedelta:
+    """
+    Converts a timeframe string to a timedelta offset.
+    FIX (Fix 2): Used to compute the exact 'Next Candle' datetime so the
+    engine hits the precise candle (e.g. signal+1m for '1m') rather than
+    the nearest available row, which could be +2m on sparse data.
+    REUSABLE: Works for '1m', '5m', '15m', '30m', '1h', '1d'.
+    """
+    unit_map = {"m": "minutes", "h": "hours", "d": "days"}
+    unit = timeframe[-1].lower()
+    val  = int(timeframe[:-1])
+    return timedelta(**{unit_map.get(unit, "minutes"): val})
+
+
+def _get_atm_from_spot(spot_close: float, strike_interval: int = 50) -> int:
+    """
+    FIX (Fix 1): Derives the ATM strike from the NIFTY spot close price at signal time.
+    Formula: ATM = ROUND(spot_close / strike_interval, 0) * strike_interval
+
+    This matches the exact manual calculation: =ROUND(E_row/50,0)*50
+    where E_row is the NIFTY (indicator data) close price at the signal candle.
+
+    REUSABLE: strike_interval param supports NIFTY (50), BANKNIFTY (100), etc.
+    No DB lookup needed — the signal row already carries the spot close.
+    """
+    return int(round(spot_close / strike_interval) * strike_interval)
 
 
 def _compute_max_drawdown(profits: list) -> float:
@@ -166,23 +161,85 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
             open_positions = {"Call": None, "Put": None}
 
             # Helpers
-            def fetch_opt_record(script_or_target, dt, timing, is_entry=True):
-                # Ensure float target strikes (e.g. 23500.0) are treated correctly
+            def _type_matches(record: OptionsData, opt_type: str) -> bool:
+                """
+                Returns True if the DB record's option type matches the requested type.
+                Handles 'Call'/'CE' and 'Put'/'PE' variants stored in the database.
+                REUSABLE: Centralised type-matching for all DB option record lookups.
+                """
+                db_type = (record.type or "").strip().lower()
+                if opt_type == "Call":
+                    return db_type in ("call", "ce")
+                elif opt_type == "Put":
+                    return db_type in ("put", "pe")
+                return True  # no filter requested
+
+            def fetch_opt_record(script_or_target, dt, timing, is_entry=True, opt_type: str = None):
+                """
+                FIX (Fix 2): 'Next Candle' tries exact dt+timeframe match first, then
+                falls back to the nearest row > dt only on a data gap.
+                FIX (Bug 1): opt_type filter ensures Call lookups only return Call records
+                and Put lookups only return Put records, preventing type contamination.
+                REUSABLE: opt_type=None disables the filter for generic lookups.
+                """
                 if isinstance(script_or_target, (int, float)):
                     script_or_target = int(script_or_target)
+
+                is_strike = type(script_or_target) == int
+                script_filter = (
+                    OptionsData.script.contains(str(script_or_target))
+                    if is_strike else
+                    OptionsData.script == script_or_target
+                )
+
+                # Build type filter when an option type is specified
+                # Map 'Call' -> both 'Call' and 'CE'; 'Put' -> both 'Put' and 'PE'
+                type_conditions = []
+                if opt_type == "Call":
+                    from sqlmodel import or_
+                    type_filter = or_(
+                        OptionsData.type == "Call",
+                        OptionsData.type == "CE",
+                        OptionsData.type == "call",
+                    )
+                    type_conditions = [type_filter]
+                elif opt_type == "Put":
+                    from sqlmodel import or_
+                    type_filter = or_(
+                        OptionsData.type == "Put",
+                        OptionsData.type == "PE",
+                        OptionsData.type == "put",
+                    )
+                    type_conditions = [type_filter]
+
                 if timing == "At Signal":
                     stmt = select(OptionsData).where(
                         OptionsData.stock == req.stock,
-                        OptionsData.script.contains(str(script_or_target)) if type(script_or_target) == int else OptionsData.script == script_or_target,
-                        OptionsData.dateTime == dt
+                        script_filter,
+                        OptionsData.dateTime == dt,
+                        *type_conditions
                     )
+                    return session.exec(stmt).first()
                 else:
-                    stmt = select(OptionsData).where(
+                    # Next Candle: try exact dt+timeframe first, fall back to nearest >
+                    exact_dt = dt + _tf_delta(req.timeframe)
+                    stmt_exact = select(OptionsData).where(
                         OptionsData.stock == req.stock,
-                        OptionsData.script.contains(str(script_or_target)) if type(script_or_target) == int else OptionsData.script == script_or_target,
-                        OptionsData.dateTime > dt
+                        script_filter,
+                        OptionsData.dateTime == exact_dt,
+                        *type_conditions
+                    )
+                    result = session.exec(stmt_exact).first()
+                    if result:
+                        return result
+                    # Fallback: nearest available candle after dt
+                    stmt_next = select(OptionsData).where(
+                        OptionsData.stock == req.stock,
+                        script_filter,
+                        OptionsData.dateTime > dt,
+                        *type_conditions
                     ).order_by(OptionsData.dateTime)
-                return session.exec(stmt).first()
+                    return session.exec(stmt_next).first()
                 
             def close_position(pos_type, exit_signal_dt, reason="Signal Exit", force_exit_opt=None):
                 pos = open_positions[pos_type]
@@ -216,19 +273,22 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                         reason = "Time-Stop Exit"
                         
                 # Compute P&L
-                exit_price = _get_price_by_point(exit_record, req.executionPrice)
+                # FIX (Fix 3+4): All prices retain 4 decimal places (via _get_price_by_point).
+                # pnl_pct is computed from RAW unrounded values before rounding profit_points,
+                # preventing compounding rounding errors in the percentage.
+                exit_price      = _get_price_by_point(exit_record, req.executionPrice)
                 avg_entry_price = pos["entryPriceTotal"] / pos["totalQuantity"]
-                profit_points = exit_price - avg_entry_price
-                
-                pnl_amount = profit_points * pos["totalQuantity"]
+                profit_points   = exit_price - avg_entry_price  # raw, unrounded
+
+                # FIX (Fix 4): PnL % = (Exit - Entry) / Entry * 100  — uses raw values
+                pnl_pct = round((profit_points / avg_entry_price) * 100, 4) if avg_entry_price != 0 else 0.0
+
+                pnl_amount  = profit_points * pos["totalQuantity"]
                 trade_value = avg_entry_price * pos["totalQuantity"]
-                sell_amount = exit_price * pos["totalQuantity"]
-                
+
                 nonlocal total_profit, wins
                 total_profit += pnl_amount
                 if pnl_amount > 0: wins += 1
-                
-                pnl_pct = round((profit_points / avg_entry_price) * 100, 2) if avg_entry_price != 0 else 0.0
 
                 # Highest / Lowest values between the two signals and their % vs entry
                 # REUSABLE: Query OHLC between two timestamps to find price extremes.
@@ -301,7 +361,7 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 if pos:
                     if req.repetitiveSignals == "Ignore repetitive Signals":
                         return # Pyramiding off
-                    add_record = fetch_opt_record(pos["script"], entry_signal_dt, req.entryTiming, is_entry=True)
+                    add_record = fetch_opt_record(pos["script"], entry_signal_dt, req.entryTiming, is_entry=True, opt_type=pos_type)
                     if add_record:
                         add_price = _get_price_by_point(add_record, req.executionPrice)
                         add_qty = 1 * (add_record.lot_size or 1)
@@ -317,11 +377,16 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                         pos["totalQuantity"] += add_qty
                     return
 
-                # Open NEW position
-                base_atm, is_single_strike = _get_derived_anchor(session, req.stock, entry_signal_dt)
-                if not base_atm:
-                    data_gaps.append({"type": "missing_options_data", "dateTime": entry_signal_dt.isoformat()})
+                # FIX (Fix 1): ATM = ROUND(signal.close / 50) * 50
+                # The signal row (IndicatorData) carries the NIFTY spot close at that candle,
+                # which is the correct spot price input for the ATM formula — exactly matching
+                # the manual Excel: =ROUND(E_row/50,0)*50
+                # signal.close is stored as int*100, so divide by 100 first.
+                spot_close = (signal.close or 0) / 100.0
+                if spot_close <= 0:
+                    data_gaps.append({"type": "missing_spot_close", "dateTime": entry_signal_dt.isoformat(), "note": "IndicatorData.close is null or zero; cannot derive ATM."})
                     return
+                base_atm = _get_atm_from_spot(spot_close)
                     
                 if req.offsetType == "ATM+":
                     target_strike = base_atm + req.offsetValue if pos_type == "Call" else base_atm - req.offsetValue
@@ -330,7 +395,7 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 else:
                     target_strike = base_atm
                     
-                entry_record = fetch_opt_record(int(target_strike), entry_signal_dt, req.entryTiming, is_entry=True)
+                entry_record = fetch_opt_record(int(target_strike), entry_signal_dt, req.entryTiming, is_entry=True, opt_type=pos_type)
                 if not entry_record:
                     data_gaps.append({"type": "missing_strike_in_options", "targetStrike": target_strike, "signalDateTime": entry_signal_dt.isoformat(), "note": f"Script near '{int(target_strike)}' not found."})
                     return
@@ -348,10 +413,9 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 elif req.tradeAmountType == "Lots":
                     qty = int(req.tradeAmountLots) * (entry_record.lot_size or 1)
                     
-                atm_proof = f"Derived ATM: {base_atm} → Target: {target_strike}"
-                if is_single_strike:
-                    atm_proof += " (Derived from single strike)"
-                    
+                # ATM proof records the spot close used so the report is fully auditable
+                atm_proof = f"Derived ATM: {base_atm} (Spot Close: {round(spot_close, 2)}) → Target: {target_strike}"
+
                 # Derive Option Type from DB field; fall back to script name if NULL.
                 # REUSABLE: CE/PE suffix convention works for NSE option scripts.
                 raw_type = entry_record.type or ""
@@ -383,42 +447,72 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 }
 
             # MAIN SIGNAL LOOP
+            # RULE (confirmed from manual Excel):
+            #   buySignal  == 1  →  CALL entry  (close any open Put first)
+            #   sellSignal == 1  →  PUT entry   (close any open Call first)
+            # applyOn controls WHICH option type is traded:
+            #   "Call" → only manage Call positions
+            #   "Put"  → only manage Put positions
+            #   "Both" → manage Call and Put simultaneously on alternating signals
+            # The UI entrySignal/exitSignal dropdowns do NOT change this direction.
+            # REUSABLE: Add new applyOn modes (e.g. "Straddle") by adding elif below.
             for signal in signals:
-                dt = signal.dateTime
-                
+                dt     = signal.dateTime
+                is_buy = signal.buySignal  == 1
+                is_sell = signal.sellSignal == 1
+
                 if end_date_dt and dt > end_date_dt:
                     break
-                    
-                is_primary = (signal.buySignal == 1) if req.entrySignal == "Buy" else (signal.sellSignal == 1)
-                is_secondary = (signal.sellSignal == 1) if req.exitSignal == "Sell" else (signal.buySignal == 1)
-                
-                if is_primary:
-                    close_position("Put", dt, "Signal Exit")
-                    if req.applyOn in ["Call", "Both"]:
-                        open_position("Call", dt, req.entrySignal)
-                        
-                if is_secondary:
-                    close_position("Call", dt, "Signal Exit")
-                    if req.applyOn in ["Put", "Both"]:
-                        open_position("Put", dt, req.exitSignal)
 
+                if req.applyOn == "Call":
+                    if is_buy:
+                        # BUY signal: re-enter Call (close existing first, then open)
+                        close_position("Call", dt, "Signal Exit")
+                        open_position("Call", dt, "Buy")
+                    elif is_sell:
+                        # SELL signal: exit Call only
+                        close_position("Call", dt, "Signal Exit")
+
+                elif req.applyOn == "Put":
+                    if is_sell:
+                        # SELL signal: re-enter Put (close existing first, then open)
+                        close_position("Put", dt, "Signal Exit")
+                        open_position("Put", dt, "Sell")
+                    elif is_buy:
+                        # BUY signal: exit Put only
+                        close_position("Put", dt, "Signal Exit")
+
+                elif req.applyOn == "Both":
+                    # BUY  → open Call  + close Put  (Put exits on BUY)
+                    # SELL → open Put   + close Call  (Call exits on SELL)
+                    if is_buy:
+                        close_position("Put",  dt, "Signal Exit")
+                        open_position("Call",  dt, "Buy")
+                    if is_sell:
+                        close_position("Call", dt, "Signal Exit")
+                        open_position("Put",   dt, "Sell")
+
+            # Tail-exit block: close positions still open at end of date range.
+            # Call exits on SELL; Put exits on BUY — consistent with main loop.
+            # REUSABLE: Consistent with the fixed BUY→Call / SELL→Put routing above.
             for pos_type in ["Call", "Put"]:
                 if open_positions[pos_type]:
                     if req.positionOpenEndAction == "Ignore last Entry":
                         pass
                     else:
+                        # Call closes on SELL; Put closes on BUY — fixed rule
                         if pos_type == "Call":
-                            cond = (IndicatorData.sellSignal == 1) if req.exitSignal == "Sell" else (IndicatorData.buySignal == 1)
+                            cond = (IndicatorData.sellSignal == 1)
                         else:
-                            cond = (IndicatorData.buySignal == 1) if req.entrySignal == "Buy" else (IndicatorData.sellSignal == 1)
-                            
+                            cond = (IndicatorData.buySignal  == 1)
+
                         next_signal = session.exec(select(IndicatorData).where(
                             IndicatorData.stock == req.stock,
                             IndicatorData.indicatorName == req.indicatorName,
                             cond,
                             IndicatorData.dateTime > open_positions[pos_type]["entryTime"]
                         ).order_by(IndicatorData.dateTime)).first()
-                        
+
                         if next_signal:
                             close_position(pos_type, next_signal.dateTime, "Beyond End Date Exit")
 

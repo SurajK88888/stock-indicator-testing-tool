@@ -48,7 +48,7 @@ def _get_price_by_point(record: OptionsData, point: str) -> float:
         "Low": record.low,
         "Close": record.close,
     }
-    return round(mapping.get(point, record.close) / 100.0, 4)
+    return round(mapping.get(point, record.close), 4)
 
 
 def _tf_delta(timeframe: str) -> timedelta:
@@ -317,8 +317,8 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     )
                     hl_rows = session.exec(hl_stmt).all()
                     if hl_rows and avg_entry_price > 0:
-                        highest_high     = round(max(r[0] / 100.0 for r in hl_rows), 4)
-                        lowest_low       = round(min(r[1] / 100.0 for r in hl_rows), 4)
+                        highest_high     = round(max(r[0] for r in hl_rows), 4)
+                        lowest_low       = round(min(r[1] for r in hl_rows), 4)
                         # Percentage: ((extreme - entry) / entry) * 100  — matches manual Excel
                         # REUSABLE: Formula applies to any option type or strike.
                         highest_high_pct = round(((highest_high - avg_entry_price) / avg_entry_price) * 100, 4)
@@ -398,8 +398,8 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 # The signal row (IndicatorData) carries the NIFTY spot close at that candle,
                 # which is the correct spot price input for the ATM formula — exactly matching
                 # the manual Excel: =ROUND(E_row/50,0)*50
-                # signal.close is stored as int*100, so divide by 100 first.
-                spot_close = (signal.close or 0) / 100.0
+                # signal.close is the raw float NIFTY spot price at that candle.
+                spot_close = (signal.close or 0.0)
                 if spot_close <= 0:
                     data_gaps.append({"type": "missing_spot_close", "dateTime": entry_signal_dt.isoformat(), "note": "IndicatorData.close is null or zero; cannot derive ATM."})
                     return

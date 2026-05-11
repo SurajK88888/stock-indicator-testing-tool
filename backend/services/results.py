@@ -309,10 +309,10 @@ def get_options_data(
     return [
         {
             "dateTime": r.dateTime.isoformat(),
-            "open":     r.open  / 100.0,
-            "high":     r.high  / 100.0,
-            "low":      r.low   / 100.0,
-            "close":    r.close / 100.0,
+            "open":     r.open,
+            "high":     r.high,
+            "low":      r.low,
+            "close":    r.close,
             "volume":   r.volume,
         }
         for r in records

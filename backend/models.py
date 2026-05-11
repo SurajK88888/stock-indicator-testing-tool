@@ -3,7 +3,7 @@ models.py — SQLModel table definitions for the Stock Indicator Testing Tool.
 REUSABLE PATTERN: All models use UUID primary keys auto-generated at insert time
 via `default_factory=lambda: str(uuid.uuid4())`. This prevents primary key
 constraint violations during bulk inserts when source data has no 'id' column.
-Prices are stored as integers (value × 100) to avoid floating-point precision errors.
+Prices are stored as raw float values (e.g. 283.1625) for full decimal precision up to 16 places.
 """
 
 import uuid
@@ -25,11 +25,11 @@ class OptionsData(SQLModel, table=True):
     dateTime: datetime
     date: Optional[str] = None   # Derived from dateTime as YYYY-MM-DD string
     time: Optional[str] = None   # Derived from dateTime as HH:MM:SS string
-    open: int                    # price x 100
-    high: int                    # price x 100
-    low: int                     # price x 100
-    close: int                   # price x 100
-    volume: int
+    open: float                  # raw price (e.g. 283.1625), stored as float for full precision
+    high: float                  # raw price
+    low: float                   # raw price
+    close: float                 # raw price
+    volume: float                # raw volume (float to accommodate fractional data if needed)
     exchange: str                # "NSE", "BSE"
     stock: str                   # "NIFTY", "BANKNIFTY"
     script: Optional[str] = None # Strike script name, e.g. "NIFTY_19500_CE"
@@ -56,11 +56,11 @@ class IndicatorData(SQLModel, table=True):
     dateTime: datetime
     date: Optional[str] = None   # Derived from dateTime as YYYY-MM-DD string
     time: Optional[str] = None   # Derived from dateTime as HH:MM:SS string
-    open: Optional[int] = None   # price x 100
-    high: Optional[int] = None   # price x 100
-    low: Optional[int] = None    # price x 100
-    close: Optional[int] = None  # price x 100
-    volume: Optional[int] = None
+    open: Optional[float] = None  # raw price (e.g. 283.1625), stored as float for full precision
+    high: Optional[float] = None  # raw price
+    low: Optional[float] = None   # raw price
+    close: Optional[float] = None # raw price
+    volume: Optional[float] = None # raw volume
     exchange: Optional[str] = None
     stock: str
     buySignal: int = Field(default=0)   # 1 = signal active, 0 = no signal
@@ -122,4 +122,3 @@ class BacktestTrade(SQLModel, table=True):
     net_points: float                # Difference between exit and entry
     net_pnl: float                   # Actual P&L amount
     derived_atm: Optional[int] = None # The derived anchor strike used
-

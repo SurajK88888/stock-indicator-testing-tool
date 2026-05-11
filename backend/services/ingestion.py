@@ -1,5 +1,5 @@
 """
-services/ingestion.py — Data ingestion pipeline for the Stock Indicator Testing Tool.
+services/ingestion.py ΓÇö Data ingestion pipeline for the Stock Indicator Testing Tool.
 
 REUSABLE PATTERNS:
 - Multi-format datetime parsing: tries a priority list of formats before failing gracefully.
@@ -11,7 +11,7 @@ REUSABLE PATTERNS:
 - UUID injection: adds 'id' to each record dict before model instantiation,
   preventing primary key constraint violations.
 
-KNOWN BUG AVOIDED: Do NOT use `session.bulk_save_objects()` — it is deprecated
+KNOWN BUG AVOIDED: Do NOT use `session.bulk_save_objects()` ΓÇö it is deprecated
 in SQLAlchemy 2.x (which SQLModel uses). Always use `session.add_all()`.
 
 KNOWN BUG AVOIDED: Never hardcode a single strptime format for Indian market data.
@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api", tags=["ingestion"])
 # NOTE: Formats with %z are intentionally NOT listed here because Polars
 # str.strptime does not handle colon-separated offsets like +05:30 reliably.
 # Instead, _try_parse_datetime() pre-strips timezone suffixes from the raw
-# string BEFORE attempting to parse — this is the safe, universal approach.
+# string BEFORE attempting to parse ΓÇö this is the safe, universal approach.
 # REUSABLE: Copy this list into any financial data parser.
 # ---------------------------------------------------------------------------
 DATETIME_FORMATS = [
@@ -94,13 +94,13 @@ def _try_parse_datetime(series: pl.Series) -> pl.Series:
                 return parsed
         except Exception:
             continue
-    # All formats failed — return original for upstream error handling
+    # All formats failed ΓÇö return original for upstream error handling
     return series
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: Upload file → extract headers + sample rows for the frontend mapper.
-# This is a lightweight "peek" step — no data is stored.
+# Endpoint: Upload file ΓåÆ extract headers + sample rows for the frontend mapper.
+# This is a lightweight "peek" step ΓÇö no data is stored.
 # ---------------------------------------------------------------------------
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -125,7 +125,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint: Ingest mapped data → parse, filter, and bulk-insert into DB.
+# Endpoint: Ingest mapped data ΓåÆ parse, filter, and bulk-insert into DB.
 # The frontend sends: the file, a JSON mapping dict, the dataType, and an
 # optional date range. All filtering happens BEFORE DB insertion.
 # ---------------------------------------------------------------------------
@@ -140,8 +140,8 @@ async def ingest_data(
     endTime: str = Form(None),      # Optional: "HH:MM" or "HH:MM:SS"
     exchange: str = Form(None),
     stock: str = Form(None),
-    optionType: str = Form(None),   # "Call" or "Put" — options only
-    expiry: str = Form(None),       # "YYYY-MM-DD" — options only
+    optionType: str = Form(None),   # "Call" or "Put" ΓÇö options only
+    expiry: str = Form(None),       # "YYYY-MM-DD" ΓÇö options only
     indicatorName: str = Form(None),  # indicator only
     manualScript: str = Form(None),   # Level 3 fallback for script
     manualLotSize: str = Form(None),  # Optional manual lot size override
@@ -156,7 +156,7 @@ async def ingest_data(
     2. Rename columns per the user's header mapping.
     3. Parse datetime column using multi-format parser.
     4. Apply pre-storage date-range filter.
-    5. Scale price columns to integer precision (×100).
+    5. Scale price columns to integer precision (├ù100).
     6. Inject metadata (exchange, stock, type, etc.) as constant columns.
     7. Bulk insert via session.add_all().
     """
@@ -173,7 +173,7 @@ async def ingest_data(
     # Capture ingestion time once for the entire batch (System Datetime)
     ingestion_time = datetime.now()
 
-    # ── Pre-flight validation ──────────────────────────────────────────────────
+    # ΓöÇΓöÇ Pre-flight validation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     # KNOWN BUG FIXED: indicatordata.indicatorName is NOT NULL.
     # If the frontend sends an empty indicatorName, Step 5 skips injection and
     # SQLite raises an IntegrityError. Catch this early with a clear message.
@@ -196,7 +196,7 @@ async def ingest_data(
 
     df = df.rename(rename_map)
 
-    # Step 2: Parse DateTime — try all known formats
+    # Step 2: Parse DateTime ΓÇö try all known formats
     if "dateTime" in df.columns:
         df = df.with_columns(
             _try_parse_datetime(df["dateTime"].cast(pl.Utf8)).alias("dateTime")
@@ -269,12 +269,13 @@ async def ingest_data(
                 return {"error": "Invalid time format. Use HH:MM or HH:MM:SS."}
 
 
-    # Step 4: Scale price columns to int precision (price × 100)
+    # Step 4: Ensure price columns are stored as raw float (no x100 scaling).
+    # REUSABLE: prices are now stored with full decimal precision (up to 16 places).
     price_cols = ["price", "open", "high", "low", "close"]
     for col in price_cols:
         if col in df.columns:
             df = df.with_columns(
-                (pl.col(col).cast(pl.Float64) * 100).cast(pl.Int64).alias(col)
+                pl.col(col).cast(pl.Float64).alias(col)
             )
 
     # Step 5: Inject metadata constants from form fields
@@ -383,7 +384,7 @@ async def ingest_data(
         return {"error": f"Failed during duplicate check query: {str(e)}"}
 
     # Step 7: Create model instances.
-    # IMPORTANT: Always inject a fresh UUID for 'id' — never rely on source data
+    # IMPORTANT: Always inject a fresh UUID for 'id' ΓÇö never rely on source data
     # having an id column. This prevents primary key constraint violations.
     instances = []
     for record in records:
@@ -414,8 +415,8 @@ async def ingest_data(
         except Exception:
             continue  # Skip malformed rows silently
 
-    # Step 8: Bulk insert using session.add_all() — SQLModel/SQLAlchemy 2.x compatible
-    # KNOWN BUG: Never use session.bulk_save_objects() — deprecated in SQLAlchemy 2.x
+    # Step 8: Bulk insert using session.add_all() ΓÇö SQLModel/SQLAlchemy 2.x compatible
+    # KNOWN BUG: Never use session.bulk_save_objects() ΓÇö deprecated in SQLAlchemy 2.x
     if instances:
         try:
             session.add_all(instances)
@@ -437,7 +438,7 @@ async def ingest_data(
 # ---------------------------------------------------------------------------
 # Endpoint: Return all distinct indicator names from the IndicatorData table.
 # The frontend Indicator Validator dropdown uses this to show only indicators
-# that have actually been imported — not a hardcoded list.
+# that have actually been imported ΓÇö not a hardcoded list.
 # ---------------------------------------------------------------------------
 @router.get("/indicators")
 def get_indicator_names(session: Session = Depends(get_session)):

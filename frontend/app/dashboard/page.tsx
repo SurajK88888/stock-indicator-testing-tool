@@ -22,8 +22,8 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("ingestion");
 
   // -- Data Ingestion State --
-  // FIX: importType now includes "spot" (3rd required import type)
-  const [importType, setImportType] = useState<"options" | "indicator" | "spot">("options");
+  // FIX: importType now includes "spot" and "signal"
+  const [importType, setImportType] = useState<"options" | "indicator" | "spot" | "signal">("options");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -32,7 +32,8 @@ export default function Dashboard() {
   const [optionsHeaders, setOptionsHeaders] = useState<string[]>([]);
   const [indicatorHeaders, setIndicatorHeaders] = useState<string[]>([]);
   const [spotHeaders, setSpotHeaders] = useState<string[]>([]);
-  const activeHeaders = importType === "options" ? optionsHeaders : importType === "indicator" ? indicatorHeaders : spotHeaders;
+  const [signalHeaders, setSignalHeaders] = useState<string[]>([]);
+  const activeHeaders = importType === "options" ? optionsHeaders : importType === "indicator" ? indicatorHeaders : importType === "signal" ? signalHeaders : spotHeaders;
 
   // -- Options Import State --
   const [optionsMap, setOptionsMap] = useState({
@@ -69,6 +70,33 @@ export default function Dashboard() {
     timeframe: "1m",
   });
 
+  // -- Signal Data Import State --
+  const [signalMap, setSignalMap] = useState({
+    signal_provider: "", signal_providerOther: "",
+    // Note: signal files have separate date + time columns; backend merges them into dateTime.
+    // dateTime mapping is intentionally omitted — only date + time columns are mapped.
+    date: "", time: "",
+    startDate: "", endDate: "", startTime: "", endTime: "",
+    // exchange/stock: static dropdown = filter selector. exchangeCol/stockCol = file column mapper.
+    // If file column mapped → backend filters rows by selected value (no override).
+    // If not mapped → selected value used as fallback constant for all rows.
+    exchange: "NSE", exchangeOther: "", exchangeCol: "",
+    stock: "NIFTY", stockOther: "", stockCol: "",
+    script: "",
+    type: "", ceValue: "", peValue: "",
+    expiry: "",
+    trade_type: "",
+    signal: "", buyValue: "", sellValue: "",
+    entry_type_col: "", entry_type_static: "Buy At",
+    entry_price: "",
+    sl: "", sl_type: "Points",
+    target_1: "", tp_type: "Points",
+    target_2: "", target_3: "", target_4: "", target_5: "",
+    target_6: "", target_7: "", target_8: "", target_9: "", target_10: "",
+    updatedBy: "",
+    extraTargetCount: 0,
+  });
+
 
   // -- Preview & Fallback State --
   const [previewData, setPreviewData] = useState<any[]>([]);
@@ -101,6 +129,7 @@ export default function Dashboard() {
 
   // FIX: Dynamic indicator list fetched from DB, not hardcoded RSI/MACD
   const [indicatorOptions, setIndicatorOptions] = useState<string[]>([]);
+  const [signalProviderOptions, setSignalProviderOptions] = useState<string[]>([]);
 
   const [clearDb, setClearDb] = useState<{
     open: boolean;
@@ -239,6 +268,7 @@ export default function Dashboard() {
       if (data.headers) {
         if (importType === "options") setOptionsHeaders(data.headers);
         else if (importType === "indicator") setIndicatorHeaders(data.headers);
+        else if (importType === "signal") setSignalHeaders(data.headers);
         else setSpotHeaders(data.headers);
         setUploadStatus("✓ Headers extracted. Map columns below.");
       } else {
@@ -260,18 +290,25 @@ export default function Dashboard() {
     setOptionsHeaders([]);
     setIndicatorHeaders([]);
     setSpotHeaders([]);
+    setSignalHeaders([]);
 
     // Reset date/time filters to ensure a clean state for the next file
     const dateReset = { startDate: "", endDate: "", startTime: "", endTime: "" };
     setOptionsMap(prev => ({ ...prev, ...dateReset }));
     setIndicatorMap(prev => ({ ...prev, ...dateReset }));
     setSpotMap(prev => ({ ...prev, ...dateReset }));
+    setSignalMap(prev => ({ ...prev, dateTime: "", date: "", time: "", script: "", type: "", expiry: "", trade_type: "", signal: "", entry_type_col: "", entry_price: "", sl: "", target_1: "", target_2: "", target_3: "", target_4: "", target_5: "", target_6: "", target_7: "", target_8: "", target_9: "", target_10: "" }));
   };
 
   // FIX: real POST /api/ingest — no more setTimeout mock
   const handleIngestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) { setUploadStatus("Please select a file first."); return; }
+    if (importType === "signal") {
+      handleSignalIngestSubmit(e);
+      return;
+    }
+    
     setUploadStatus("Ingesting data...");
     const fd = new FormData();
     fd.append("file", selectedFile);
@@ -327,6 +364,76 @@ export default function Dashboard() {
     } catch { setUploadStatus("Failed to contact backend. Ensure uvicorn is running."); }
   };
 
+  const handleSignalIngestSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFile) { setUploadStatus("Please select a file first."); return; }
+    const provider = signalMap.signal_provider === "Other" ? signalMap.signal_providerOther : signalMap.signal_provider;
+    if (!provider) { setUploadStatus("Please enter a Signal Source Name."); return; }
+    
+    setUploadStatus("Ingesting signal data...");
+    const fd = new FormData();
+    fd.append("file", selectedFile);
+    fd.append("signal_provider", provider);
+    
+    const m = signalMap;
+    const mappings: Record<string, string> = {};
+    // Signal files always have separate Date + Time columns — no combined dateTime mapping.
+    if (m.date) mappings[m.date] = "date";
+    if (m.time) mappings[m.time] = "time";
+    // Map Exchange/Stock columns from file if the user selected a header for them
+    if (m.exchangeCol) mappings[m.exchangeCol] = "exchange";
+    if (m.stockCol) mappings[m.stockCol] = "stock";
+    if (m.script) mappings[m.script] = "script";
+    if (m.type) mappings[m.type] = "type";
+    if (m.expiry) mappings[m.expiry] = "expiry";
+    if (m.trade_type) mappings[m.trade_type] = "trade_type";
+    if (m.signal) mappings[m.signal] = "signal";
+    if (m.entry_type_col) mappings[m.entry_type_col] = "entry_type";
+    if (m.entry_price) mappings[m.entry_price] = "entry_price";
+    if (m.sl) mappings[m.sl] = "sl";
+    if (m.target_1) mappings[m.target_1] = "target_1";
+    if (m.target_2) mappings[m.target_2] = "target_2";
+    if (m.target_3) mappings[m.target_3] = "target_3";
+    if (m.target_4) mappings[m.target_4] = "target_4";
+    if (m.target_5) mappings[m.target_5] = "target_5";
+    if (m.target_6) mappings[m.target_6] = "target_6";
+    if (m.target_7) mappings[m.target_7] = "target_7";
+    if (m.target_8) mappings[m.target_8] = "target_8";
+    if (m.target_9) mappings[m.target_9] = "target_9";
+    if (m.target_10) mappings[m.target_10] = "target_10";
+
+    const cleanMappings = Object.fromEntries(Object.entries(mappings).filter(([k, v]) => k && v));
+    fd.append("mappings", JSON.stringify(cleanMappings));
+    
+    const exchange = m.exchange === "Other" ? m.exchangeOther : m.exchange;
+    const stock = m.stock === "Other" ? m.stockOther : m.stock;
+    
+    if (exchange) fd.append("exchange", exchange);
+    if (stock) fd.append("stock", stock);
+    // date_format / time_format removed: backend auto-detects from DATETIME_FORMATS list.
+    if (m.entry_type_static) fd.append("entry_type_static", m.entry_type_static);
+    if (m.sl_type) fd.append("sl_type", m.sl_type);
+    if (m.tp_type) fd.append("tp_type", m.tp_type);
+    if (m.buyValue) fd.append("buy_value", m.buyValue);
+    if (m.sellValue) fd.append("sell_value", m.sellValue);
+    if (m.ceValue) fd.append("ce_value", m.ceValue);
+    if (m.peValue) fd.append("pe_value", m.peValue);
+    if (m.updatedBy) fd.append("updatedBy", m.updatedBy);
+
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/signals/ingest", { method: "POST", body: fd });
+      const data = await res.json();
+      setUploadStatus(data.error ? "Error: " + data.error : data.message);
+      if (!data.error) {
+        fetch("http://127.0.0.1:8000/api/signals/providers")
+          .then(r => r.json())
+          .then(d => { if (Array.isArray(d.providers)) setSignalProviderOptions(d.providers); });
+      }
+    } catch { 
+      setUploadStatus("Failed to contact backend. Ensure uvicorn is running."); 
+    }
+  };
+
   // Fetch Preview Data
   const fetchPreview = async () => {
     if (!selectedFile) return;
@@ -354,6 +461,30 @@ export default function Dashboard() {
       exchange = m.exchange === "Other" ? m.exchangeOther : m.exchange;
       stock = m.stock === "Other" ? m.stockOther : m.stock;
       indicatorName = m.indicator === "Other" ? m.indicatorOther : m.indicator;
+      startDate = m.startDate; endDate = m.endDate; startTime = m.startTime; endTime = m.endTime;
+    } else if (importType === "signal") {
+      const m = signalMap;
+      // Map all user-selected headers to their DB field names
+      if (m.date) mappings[m.date] = "date";
+      if (m.time) mappings[m.time] = "time";
+      // Include exchange/stock column mappings if user selected them from file headers
+      if (m.exchangeCol) mappings[m.exchangeCol] = "exchange";
+      if (m.stockCol) mappings[m.stockCol] = "stock";
+      if (m.script) mappings[m.script] = "script";
+      if (m.type) mappings[m.type] = "type";
+      if (m.expiry) mappings[m.expiry] = "expiry";
+      if (m.trade_type) mappings[m.trade_type] = "trade_type";
+      if (m.signal) mappings[m.signal] = "signal";
+      if (m.entry_type_col) mappings[m.entry_type_col] = "entry_type";
+      if (m.entry_price) mappings[m.entry_price] = "entry_price";
+      if (m.sl) mappings[m.sl] = "sl";
+      if (m.target_1) mappings[m.target_1] = "target_1";
+      if (m.target_2) mappings[m.target_2] = "target_2";
+      if (m.target_3) mappings[m.target_3] = "target_3";
+      if (m.target_4) mappings[m.target_4] = "target_4";
+      if (m.target_5) mappings[m.target_5] = "target_5";
+      exchange = m.exchange === "Other" ? m.exchangeOther : m.exchange;
+      stock = m.stock === "Other" ? m.stockOther : m.stock;
       startDate = m.startDate; endDate = m.endDate; startTime = m.startTime; endTime = m.endTime;
     }
     const clean = Object.fromEntries(Object.entries(mappings).filter(([k, v]) => k && v));
@@ -397,6 +528,15 @@ export default function Dashboard() {
             startTime: prev.startTime || data.min_time || "",
             endTime: prev.endTime || data.max_time || ""
           }));
+        } else if (importType === "signal") {
+          // Auto-populate date/time range for signal imports
+          setSignalMap(prev => ({
+            ...prev,
+            startDate: prev.startDate || data.min_date || "",
+            endDate: prev.endDate || data.max_date || "",
+            startTime: prev.startTime || data.min_time || "",
+            endTime: prev.endTime || data.max_time || ""
+          }));
         } else {
           setSpotMap(prev => ({
             ...prev,
@@ -419,7 +559,8 @@ export default function Dashboard() {
       if (selectedFile) fetchPreview();
     }, 500);
     return () => clearTimeout(timer);
-  }, [optionsMap, indicatorMap, spotMap, importType, selectedFile, manualScript]);
+  // signalMap added so preview re-triggers when signal column mappings change
+  }, [optionsMap, indicatorMap, spotMap, signalMap, importType, selectedFile, manualScript]);
 
   // FIX: real POST /api/validate + job polling — no more mock setTimeout
   const handleValidateSubmit = async () => {
@@ -479,6 +620,15 @@ export default function Dashboard() {
           if (activeTab === "validator" && d.indicators.length > 0 && !valConfig.indicator) {
             setValConfig(v => ({ ...v, indicator: d.indicators[0] }));
           }
+        }
+      })
+      .catch(() => { });
+
+    fetch("http://127.0.0.1:8000/api/signals/providers")
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d.providers)) {
+          setSignalProviderOptions(d.providers);
         }
       })
       .catch(() => { });
@@ -778,6 +928,10 @@ export default function Dashboard() {
                     className={`flex-1 py-2 px-3 text-sm font-bold rounded-md transition-all ${importType === "indicator" ? "bg-primary text-on-primary shadow-lg" : "text-slate-400 hover:text-white"}`}>
                     Indicator Data
                   </button>
+                  <button onClick={() => setImportType("signal")}
+                    className={`flex-1 py-2 px-3 text-sm font-bold rounded-md transition-all ${importType === "signal" ? "bg-primary text-on-primary shadow-lg" : "text-slate-400 hover:text-white"}`}>
+                    Signal Data
+                  </button>
                 </div>
               </div>
 
@@ -801,14 +955,14 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2">
                       <div className="h-4 w-1 bg-primary rounded-full"></div>
                       <h3 className="text-xl font-bold font-headline">
-                        {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} Data — Header Mapping
+                        {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : importType === 'signal' ? 'Signal' : 'Spot/Index'} Data — Header Mapping
                       </h3>
                     </div>
                     <div className="bg-surface-container-low p-3 rounded-lg border border-white/10 flex flex-col justify-center border-dashed hover:border-primary/50 transition-colors w-full md:w-auto min-w-[240px]">
                       {!selectedFile ? (
                         <>
                           <label className="block text-xs font-bold mb-2 text-slate-300 cursor-pointer flex items-center gap-2">
-                            <FileText size={14} className="text-primary" /> Select {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} File
+                            <FileText size={14} className="text-primary" /> Select {importType === 'options' ? 'Options/Equity' : importType === 'indicator' ? 'Indicator' : importType === 'signal' ? 'Signal' : 'Spot/Index'} File
                           </label>
                           <input type="file" onChange={handleFileChange} className="text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer w-full" />
                         </>
@@ -870,9 +1024,13 @@ export default function Dashboard() {
 
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-surface-container-lowest p-6 rounded-lg border border-white/5">
+                    {/* Signal files always have separate Date + Time columns; backend merges them. No combined DateTime mapping. */}
                     {importType === "options" && renderHeaderDropdown(optionsMap.dateTime, v => setOptionsMap({ ...optionsMap, dateTime: v }), "DateTime", activeHeaders, "Combined Date & Time column. Leave blank if your file splits Date and Time.")}
                     {importType === "indicator" && renderHeaderDropdown(indicatorMap.dateTime, v => setIndicatorMap({ ...indicatorMap, dateTime: v }), "DateTime", activeHeaders, "Combined Date & Time column. Leave blank if your file splits Date and Time.")}
                     {importType === "spot" && renderHeaderDropdown(spotMap.dateTime, v => setSpotMap({ ...spotMap, dateTime: v }), "DateTime", activeHeaders, "Combined Date & Time column. Leave blank if your file splits Date and Time.")}
+                    {/* Signal: show a placeholder div so grid layout stays consistent */}
+                    {importType === "signal" && <div />}
+
 
                     <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6">
                       {/* Date Config */}
@@ -880,18 +1038,19 @@ export default function Dashboard() {
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-primary flex items-center">Date Filter <InfoTooltip text="Only import rows falling within this exact date range." /></span>
                           <span className="text-[10px] text-slate-400">
-                            Range: {(importType === "options" ? optionsMap.startDate : indicatorMap.startDate) || 'All'} to {(importType === "options" ? optionsMap.endDate : indicatorMap.endDate) || 'All'}
+                            Range: {(importType === "options" ? optionsMap.startDate : importType === "signal" ? signalMap.startDate : indicatorMap.startDate) || 'All'} to {(importType === "options" ? optionsMap.endDate : importType === "signal" ? signalMap.endDate : indicatorMap.endDate) || 'All'}
                           </span>
                         </div>
                         {importType === "options" && renderHeaderDropdown(optionsMap.date, v => setOptionsMap({ ...optionsMap, date: v }), "Date Column", activeHeaders, "Map this if your file has a standalone Date column.")}
                         {importType === "indicator" && renderHeaderDropdown(indicatorMap.date, v => setIndicatorMap({ ...indicatorMap, date: v }), "Date Column", activeHeaders, "Map this if your file has a standalone Date column.")}
+                        {importType === "signal" && renderHeaderDropdown(signalMap.date, v => setSignalMap({ ...signalMap, date: v }), "Date Column", activeHeaders, "Map this if your file has a standalone Date column.")}
                         <div className="grid grid-cols-2 gap-3">
                           <div className="min-w-0">
                             <label className="text-[10px] text-slate-500 font-bold uppercase">Start Date</label>
                             {uniqueDates.length > 0 ? (
                               <select
-                                value={importType === "options" ? optionsMap.startDate : indicatorMap.startDate}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, startDate: e.target.value })}
+                                value={importType === "options" ? optionsMap.startDate : importType === "signal" ? signalMap.startDate : indicatorMap.startDate}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startDate: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, startDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, startDate: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50"
                               >
                                 <option value="">All Dates</option>
@@ -899,8 +1058,8 @@ export default function Dashboard() {
                               </select>
                             ) : (
                               <input type="date"
-                                value={importType === "options" ? optionsMap.startDate : indicatorMap.startDate}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, startDate: e.target.value })}
+                                value={importType === "options" ? optionsMap.startDate : importType === "signal" ? signalMap.startDate : indicatorMap.startDate}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startDate: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, startDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, startDate: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50 [color-scheme:dark]" />
                             )}
                           </div>
@@ -908,8 +1067,8 @@ export default function Dashboard() {
                             <label className="text-[10px] text-slate-500 font-bold uppercase">End Date</label>
                             {uniqueDates.length > 0 ? (
                               <select
-                                value={importType === "options" ? optionsMap.endDate : indicatorMap.endDate}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, endDate: e.target.value })}
+                                value={importType === "options" ? optionsMap.endDate : importType === "signal" ? signalMap.endDate : indicatorMap.endDate}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endDate: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, endDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, endDate: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50"
                               >
                                 <option value="">All Dates</option>
@@ -917,8 +1076,8 @@ export default function Dashboard() {
                               </select>
                             ) : (
                               <input type="date"
-                                value={importType === "options" ? optionsMap.endDate : indicatorMap.endDate}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, endDate: e.target.value })}
+                                value={importType === "options" ? optionsMap.endDate : importType === "signal" ? signalMap.endDate : indicatorMap.endDate}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endDate: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, endDate: e.target.value }) : setIndicatorMap({ ...indicatorMap, endDate: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50 [color-scheme:dark]" />
                             )}
                           </div>
@@ -929,18 +1088,19 @@ export default function Dashboard() {
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-primary flex items-center">Time Filter <InfoTooltip text="Only import rows falling within this exact time window each day." /></span>
                           <span className="text-[10px] text-slate-400">
-                            Range: {(importType === "options" ? optionsMap.startTime : indicatorMap.startTime) || 'All'} to {(importType === "options" ? optionsMap.endTime : indicatorMap.endTime) || 'All'}
+                            Range: {(importType === "options" ? optionsMap.startTime : importType === "signal" ? signalMap.startTime : indicatorMap.startTime) || 'All'} to {(importType === "options" ? optionsMap.endTime : importType === "signal" ? signalMap.endTime : indicatorMap.endTime) || 'All'}
                           </span>
                         </div>
                         {importType === "options" && renderHeaderDropdown(optionsMap.time, v => setOptionsMap({ ...optionsMap, time: v }), "Time Column", activeHeaders, "Map this if your file has a standalone Time column.")}
                         {importType === "indicator" && renderHeaderDropdown(indicatorMap.time, v => setIndicatorMap({ ...indicatorMap, time: v }), "Time Column", activeHeaders, "Map this if your file has a standalone Time column.")}
+                        {importType === "signal" && renderHeaderDropdown(signalMap.time, v => setSignalMap({ ...signalMap, time: v }), "Time Column", activeHeaders, "Map this if your file has a standalone Time column.")}
                         <div className="grid grid-cols-2 gap-3">
                           <div className="min-w-0">
                             <label className="text-[10px] text-slate-500 font-bold uppercase">Start Time</label>
                             {uniqueTimes.length > 0 ? (
                               <select
-                                value={importType === "options" ? optionsMap.startTime : indicatorMap.startTime}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, startTime: e.target.value })}
+                                value={importType === "options" ? optionsMap.startTime : importType === "signal" ? signalMap.startTime : indicatorMap.startTime}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startTime: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, startTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, startTime: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50"
                               >
                                 <option value="">All Times</option>
@@ -948,8 +1108,8 @@ export default function Dashboard() {
                               </select>
                             ) : (
                               <input type="time" step="1"
-                                value={importType === "options" ? optionsMap.startTime : indicatorMap.startTime}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, startTime: e.target.value })}
+                                value={importType === "options" ? optionsMap.startTime : importType === "signal" ? signalMap.startTime : indicatorMap.startTime}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, startTime: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, startTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, startTime: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50 [color-scheme:dark]" />
                             )}
                           </div>
@@ -957,8 +1117,8 @@ export default function Dashboard() {
                             <label className="text-[10px] text-slate-500 font-bold uppercase">End Time</label>
                             {uniqueTimes.length > 0 ? (
                               <select
-                                value={importType === "options" ? optionsMap.endTime : indicatorMap.endTime}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, endTime: e.target.value })}
+                                value={importType === "options" ? optionsMap.endTime : importType === "signal" ? signalMap.endTime : indicatorMap.endTime}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endTime: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, endTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, endTime: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50"
                               >
                                 <option value="">All Times</option>
@@ -966,8 +1126,8 @@ export default function Dashboard() {
                               </select>
                             ) : (
                               <input type="time" step="1"
-                                value={importType === "options" ? optionsMap.endTime : indicatorMap.endTime}
-                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, endTime: e.target.value })}
+                                value={importType === "options" ? optionsMap.endTime : importType === "signal" ? signalMap.endTime : indicatorMap.endTime}
+                                onChange={e => importType === "options" ? setOptionsMap({ ...optionsMap, endTime: e.target.value }) : importType === "signal" ? setSignalMap({ ...signalMap, endTime: e.target.value }) : setIndicatorMap({ ...indicatorMap, endTime: e.target.value })}
                                 className="w-full bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-sm text-white focus:border-primary/50 [color-scheme:dark]" />
                             )}
                           </div>
@@ -977,6 +1137,7 @@ export default function Dashboard() {
                   </div>
 
                   {/* OHLCV Map — options/indicator */}
+                  {importType !== "signal" && (
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     {renderHeaderDropdown(importType === "options" ? optionsMap.open : indicatorMap.open, v => importType === "options" ? setOptionsMap({ ...optionsMap, open: v }) : setIndicatorMap({ ...indicatorMap, open: v }), "Open", activeHeaders, "Opening price of the candle")}
                     {renderHeaderDropdown(importType === "options" ? optionsMap.high : indicatorMap.high, v => importType === "options" ? setOptionsMap({ ...optionsMap, high: v }) : setIndicatorMap({ ...indicatorMap, high: v }), "High", activeHeaders, "Highest price of the candle")}
@@ -984,8 +1145,10 @@ export default function Dashboard() {
                     {renderHeaderDropdown(importType === "options" ? optionsMap.close : indicatorMap.close, v => importType === "options" ? setOptionsMap({ ...optionsMap, close: v }) : setIndicatorMap({ ...indicatorMap, close: v }), "Close", activeHeaders, "Closing price of the candle")}
                     {renderHeaderDropdown(importType === "options" ? optionsMap.volume : indicatorMap.volume, v => importType === "options" ? setOptionsMap({ ...optionsMap, volume: v }) : setIndicatorMap({ ...indicatorMap, volume: v }), "Volume", activeHeaders, "Trading volume (optional)")}
                   </div>
+                  )}
 
                   {/* Base Setup Map */}
+                  {importType !== "signal" && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
 
                     <div className="flex flex-col gap-1 w-full">
@@ -1072,6 +1235,7 @@ export default function Dashboard() {
 
 
                   </div>
+                  )}
 
                   {/* Indicator Specific Maps */}
                   {importType === "indicator" && (
@@ -1080,10 +1244,150 @@ export default function Dashboard() {
                       {renderHeaderDropdown(indicatorMap.sell, (val) => setIndicatorMap({ ...indicatorMap, sell: val }), "Sell Signal Column")}
                     </div>
                   )}
+                  {/* Signal Specific Maps */}
+                  {importType === "signal" && (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
+                        <div className="flex flex-col gap-1 w-full">
+                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
+                            Signal Source Name <span className="text-red-400 ml-1">*</span>
+                            <InfoTooltip text="The exact name of the signal source (e.g. Telegram Channel Name)." />
+                          </label>
+                          <select
+                            value={signalMap.signal_provider}
+                            onChange={(e) => setSignalMap({ ...signalMap, signal_provider: e.target.value })}
+                            className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                          >
+                            <option value="">Select Signal Provider</option>
+                            {signalProviderOptions.map(name => (
+                              <option key={name} value={name}>{name}</option>
+                            ))}
+                            <option value="Other">Other (custom)</option>
+                          </select>
+                        </div>
+                        {signalMap.signal_provider === "Other" && (
+                          <div className="flex flex-col gap-1 w-full animate-in slide-in-from-right-4">
+                            <label className="text-primary font-bold uppercase tracking-wider text-[10px]">Custom Signal Source</label>
+                            <input type="text" value={signalMap.signal_providerOther} onChange={(e) => setSignalMap({ ...signalMap, signal_providerOther: e.target.value })} className="bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter signal source name" />
+                          </div>
+                        )}
+                        
+                        {/* Date Format and Time Format fields removed per spec:
+                            The backend auto-detects formats from the shared DATETIME_FORMATS list.
+                            Users only need to map the Date column and Time column headers. */}
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 pt-4 border-t border-white/5">
+                        <div className="flex flex-col gap-1 w-full">
+                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
+                            Exchange <InfoTooltip text="Select the exchange to filter imported rows. Only rows matching this exchange will be stored. If the file has no Exchange column, this value is used for all rows." />
+                          </label>
+                          <select value={signalMap.exchange} onChange={(e) => setSignalMap({ ...signalMap, exchange: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50">
+                            <option value="">All (no filter)</option>
+                            <option value="NSE">NSE</option>
+                            <option value="BSE">BSE</option>
+                            <option value="Other">Other</option>
+                          </select>
+                          {signalMap.exchange === "Other" && <input type="text" value={signalMap.exchangeOther} onChange={(e) => setSignalMap({ ...signalMap, exchangeOther: e.target.value })} className="mt-2 bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white" placeholder="Custom exchange" />}
+                          {/* Exchange Column mapping — maps file header to the exchange DB field */}
+                          {renderHeaderDropdown(signalMap.exchangeCol, v => setSignalMap({ ...signalMap, exchangeCol: v }), "Exchange Column", activeHeaders, "Map the Exchange column from your file. Values are stored as-is from the file; the dropdown above acts as a row filter.")}
+                        </div>
+                        <div className="flex flex-col gap-1 w-full">
+                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
+                            Stock <InfoTooltip text="Select the stock to filter imported rows. Only rows matching this stock will be stored. If the file has no Stock column, this value is used for all rows." />
+                          </label>
+                          <select value={signalMap.stock} onChange={(e) => setSignalMap({ ...signalMap, stock: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50">
+                            <option value="">All (no filter)</option>
+                            <option value="NIFTY">NIFTY</option>
+                            <option value="BANKNIFTY">BANKNIFTY</option>
+                            <option value="SENSEX">SENSEX</option>
+                            <option value="Other">Other</option>
+                          </select>
+                          {signalMap.stock === "Other" && <input type="text" value={signalMap.stockOther} onChange={(e) => setSignalMap({ ...signalMap, stockOther: e.target.value })} className="mt-2 bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white" placeholder="Custom stock" />}
+                          {/* Stock Column mapping — maps file header to the stock DB field */}
+                          {renderHeaderDropdown(signalMap.stockCol, v => setSignalMap({ ...signalMap, stockCol: v }), "Stock Column", activeHeaders, "Map the Stock column from your file. Values are stored as-is from the file; the dropdown above acts as a row filter.")}
+                        </div>
+                        {renderHeaderDropdown(signalMap.script, v => setSignalMap({ ...signalMap, script: v }), "Script Column", activeHeaders, "Strike Price e.g. 24750")}
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.expiry, v => setSignalMap({ ...signalMap, expiry: v }), "Expiry Column", activeHeaders, "Defaults to nearest Tue(NSE)/Thu(BSE) if empty")}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.type, v => setSignalMap({ ...signalMap, type: v }), "Type Column (CE/PE)", activeHeaders)}
+                        </div>
+                        {renderHeaderDropdown(signalMap.trade_type, v => setSignalMap({ ...signalMap, trade_type: v }), "Trade Type Column", activeHeaders, "e.g. Intraday, BTST. Defaults to Intraday if blank.")}
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.signal, v => setSignalMap({ ...signalMap, signal: v }), "Signal Column", activeHeaders, "e.g. Buy/Sell")}
+                        </div>
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.entry_type_col, v => setSignalMap({ ...signalMap, entry_type_col: v }), "Entry Type Column", activeHeaders)}
+                          <select value={signalMap.entry_type_static} onChange={(e) => setSignalMap({ ...signalMap, entry_type_static: e.target.value })} className="mt-2 bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-[10px] text-white">
+                            <option value="Buy At">Default: Buy At</option>
+                            <option value="Above">Default: Above</option>
+                            <option value="Below">Default: Below</option>
+                            <option value="Sell At">Default: Sell At</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 pt-4 border-t border-white/5">
+                        {renderHeaderDropdown(signalMap.entry_price, v => setSignalMap({ ...signalMap, entry_price: v }), "Entry Price Column", activeHeaders)}
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.sl, v => setSignalMap({ ...signalMap, sl: v }), "Stop Loss Column", activeHeaders)}
+                          <select value={signalMap.sl_type} onChange={(e) => setSignalMap({ ...signalMap, sl_type: e.target.value })} className="mt-2 bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-[10px] text-white">
+                            <option value="Points">Value Type: Points</option>
+                            <option value="Percentage">Value Type: Percentage</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-1 w-full">
+                          {renderHeaderDropdown(signalMap.target_1, v => setSignalMap({ ...signalMap, target_1: v }), "Target 1 Column", activeHeaders)}
+                          <select value={signalMap.tp_type} onChange={(e) => setSignalMap({ ...signalMap, tp_type: e.target.value })} className="mt-2 bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-[10px] text-white">
+                            <option value="Points">Value Type: Points</option>
+                            <option value="Percentage">Value Type: Percentage</option>
+                          </select>
+                        </div>
+                        {renderHeaderDropdown(signalMap.target_2, v => setSignalMap({ ...signalMap, target_2: v }), "Target 2 Column", activeHeaders)}
+                      </div>
+
+                      <div className="pt-2">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                          {signalMap.extraTargetCount >= 1 && renderHeaderDropdown(signalMap.target_3, v => setSignalMap({ ...signalMap, target_3: v }), "Target 3 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 2 && renderHeaderDropdown(signalMap.target_4, v => setSignalMap({ ...signalMap, target_4: v }), "Target 4 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 3 && renderHeaderDropdown(signalMap.target_5, v => setSignalMap({ ...signalMap, target_5: v }), "Target 5 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 4 && renderHeaderDropdown(signalMap.target_6, v => setSignalMap({ ...signalMap, target_6: v }), "Target 6 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 5 && renderHeaderDropdown(signalMap.target_7, v => setSignalMap({ ...signalMap, target_7: v }), "Target 7 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 6 && renderHeaderDropdown(signalMap.target_8, v => setSignalMap({ ...signalMap, target_8: v }), "Target 8 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 7 && renderHeaderDropdown(signalMap.target_9, v => setSignalMap({ ...signalMap, target_9: v }), "Target 9 Column", activeHeaders)}
+                          {signalMap.extraTargetCount >= 8 && renderHeaderDropdown(signalMap.target_10, v => setSignalMap({ ...signalMap, target_10: v }), "Target 10 Column", activeHeaders)}
+                        </div>
+                        {signalMap.extraTargetCount < 8 && (
+                          <button type="button" onClick={() => setSignalMap({ ...signalMap, extraTargetCount: signalMap.extraTargetCount + 1 })} className="mt-4 text-xs font-bold text-primary hover:text-primary/80 flex items-center gap-1 border border-primary/20 rounded px-3 py-1.5 hover:bg-primary/5 transition-all">
+                            + Add More Target
+                          </button>
+                        )}
+                      </div>
+                      
+                      <div className="flex flex-col gap-1 w-full md:w-1/2 mt-2">
+                        <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Updated By</label>
+                        <input
+                          type="text"
+                          value={signalMap.updatedBy}
+                          onChange={(e) => setSignalMap({ ...signalMap, updatedBy: e.target.value })}
+                          className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                          placeholder="Enter your username (e.g. admin)"
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="pt-6 border-t border-white/10 flex justify-between items-center">
                     <button type="submit" className="w-full md:w-auto bg-primary text-on-primary px-10 py-4 rounded-lg font-bold uppercase tracking-wide text-sm hover:brightness-110 flex justify-center items-center gap-2 transition-all shadow-[0_0_20px_rgba(78,222,163,0.3)]">
-                      <Upload size={18} /> Ingest {importType === 'options' ? 'Options' : importType === 'indicator' ? 'Indicator' : 'Spot/Index'} Data
+                      <Upload size={18} /> Ingest {importType === 'options' ? 'Options' : importType === 'indicator' ? 'Indicator' : importType === 'signal' ? 'Signal' : 'Spot/Index'} Data
                     </button>
                     {previewLoading && <span className="text-xs text-primary animate-pulse flex items-center gap-2"><Upload size={12} className="animate-bounce" /> Updating Preview...</span>}
                   </div>
@@ -1099,6 +1403,9 @@ export default function Dashboard() {
                   <div className="overflow-x-auto overflow-y-auto max-h-[70vh] rounded-lg border border-white/10 bg-surface-container-lowest">
                     {(() => {
                       // Define all possible columns and their data access logic
+                      // All possible preview columns across all import types (options, indicator, spot, signal).
+                      // Only columns that have data in the first preview row are rendered.
+                      // REUSABLE: Add new import-type columns here as new types are added.
                       const columnConfigs = [
                         { label: "Date", key: "date", fallback: (row: any) => row.Calculated_Date || (row.dateTime ? row.dateTime.split(/[ T]/)[0] : "") },
                         { label: "Time", key: "time", fallback: (row: any) => row.Calculated_Time || (row.dateTime ? row.dateTime.split(/[ T]/)[1]?.split(/[+-]/)[0] : "") },
@@ -1118,6 +1425,18 @@ export default function Dashboard() {
                         { label: "Buy Signal", key: "buySignal" },
                         { label: "Sell Signal", key: "sellSignal" },
                         { label: "Indicator Name", key: "indicatorName" },
+                        // Signal-specific columns
+                        { label: "Signal Provider", key: "signal_provider" },
+                        { label: "Trade Type", key: "trade_type" },
+                        { label: "Signal", key: "signal" },
+                        { label: "Entry Type", key: "entry_type" },
+                        { label: "Entry Price", key: "entry_price" },
+                        { label: "Stop Loss", key: "sl" },
+                        { label: "Target 1", key: "target_1" },
+                        { label: "Target 2", key: "target_2" },
+                        { label: "Target 3", key: "target_3" },
+                        { label: "Target 4", key: "target_4" },
+                        { label: "Target 5", key: "target_5" },
                         { label: "Updated By", key: "updatedBy" },
                       ];
 

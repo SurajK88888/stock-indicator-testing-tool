@@ -273,15 +273,20 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                         reason = "Time-Stop Exit"
                         
                 # Compute P&L
-                # All prices retain 4 decimal places via _get_price_by_point.
-                # pnl_pct uses raw unrounded values to prevent compounding rounding errors.
+                # _get_price_by_point rounds the fetched OHLC price to 4dp — this controls
+                # the calculation INPUT only (prevents sub-pip noise in entry/exit prices).
+                # All computed RESULTS (profit_points, pnl_pct, tradeValue, etc.) flow into
+                # the trade dict and DB at full IEEE-754 float64 precision (~16 sig. digits)
+                # with NO round() applied. This ensures stored values like pnlPct are exact.
                 exit_price      = _get_price_by_point(exit_record, req.executionPrice)
                 avg_entry_price = pos["entryPriceTotal"] / pos["totalQuantity"]
                 profit_points   = exit_price - avg_entry_price  # raw, unrounded
 
                 # PnL % = (Exit - Entry) / Entry × 100  — stored as percentage (e.g. 8.14 = 8.14%)
                 # Formula matches manual: (PnL Points / Entry At) * 100
-                pnl_pct = round((profit_points / avg_entry_price) * 100, 4) if avg_entry_price != 0 else 0.0
+                # PRECISION: round() removed — full IEEE-754 float64 precision stored in DB.
+                # Calculations use in-memory floats; round() only truncated the stored value.
+                pnl_pct = ((profit_points / avg_entry_price) * 100) if avg_entry_price != 0 else 0.0
 
                 pnl_amount  = profit_points * pos["totalQuantity"]
                 trade_value = avg_entry_price * pos["totalQuantity"]
@@ -317,12 +322,15 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     )
                     hl_rows = session.exec(hl_stmt).all()
                     if hl_rows and avg_entry_price > 0:
-                        highest_high     = round(max(r[0] for r in hl_rows), 4)
-                        lowest_low       = round(min(r[1] for r in hl_rows), 4)
+                        # PRECISION: round() removed — store raw max/min values at full float64 precision.
+                        # These are used as inputs to the pct calculations below; keeping them unrounded
+                        # prevents compounding precision loss across two formula steps.
+                        highest_high     = max(r[0] for r in hl_rows)
+                        lowest_low       = min(r[1] for r in hl_rows)
                         # Percentage: ((extreme - entry) / entry) * 100  — matches manual Excel
                         # REUSABLE: Formula applies to any option type or strike.
-                        highest_high_pct = round(((highest_high - avg_entry_price) / avg_entry_price) * 100, 4)
-                        lowest_low_pct   = round(((lowest_low   - avg_entry_price) / avg_entry_price) * 100, 4)
+                        highest_high_pct = ((highest_high - avg_entry_price) / avg_entry_price) * 100
+                        lowest_low_pct   = ((lowest_low   - avg_entry_price) / avg_entry_price) * 100
                 except Exception:
                     pass
 
@@ -333,8 +341,9 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 LOT_MULTIPLIER = 2
                 lots_count = pos.get("lotsCount", 0)
                 if req.tradeAmountType == "Lots" and lots_count > 0:
-                    buy_amount_val  = round(LOT_MULTIPLIER * lots_count * avg_entry_price, 4)
-                    sell_amount_val = round(LOT_MULTIPLIER * lots_count * exit_price, 4)
+                    # PRECISION: round() removed — full float64 precision stored.
+                    buy_amount_val  = LOT_MULTIPLIER * lots_count * avg_entry_price
+                    sell_amount_val = LOT_MULTIPLIER * lots_count * exit_price
                 else:
                     buy_amount_val  = "-"
                     sell_amount_val = "-"
@@ -350,12 +359,12 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     "entryPrice":       avg_entry_price,
                     "exitPrice":        exit_price,
                     "duration":         _format_duration(pos["entryTime"], exit_record.dateTime),
-                    "points":           round(profit_points, 4),  # Exit At - Entry At (4dp)
-                    "pnlPct":           pnl_pct,                  # (points / entryAt) ratio
+                    "points":           profit_points,        # Exit At - Entry At (full precision)
+                    "pnlPct":           pnl_pct,              # (points / entryAt) × 100
                     "strike":           pos["targetStrike"],
-                    "profit":           round(sell_amount_val - buy_amount_val, 4) if isinstance(sell_amount_val, float) else round(pnl_amount, 4),  # SellAmt - BuyAmt
+                    "profit":           (sell_amount_val - buy_amount_val) if isinstance(sell_amount_val, float) else pnl_amount,  # SellAmt - BuyAmt
                     "quantity":         pos["totalQuantity"],
-                    "tradeValue":       round(trade_value, 4),
+                    "tradeValue":       trade_value,           # avg_entry × quantity (full precision)
                     "exitReason":       reason,
                     # --- Report Table & Excel Export fields ---
                     "optionType":       pos.get("optionType", ""),  # Call / Put

@@ -56,6 +56,19 @@ DATETIME_FORMATS = [
     "%d-%b-%Y %H:%M:%S",   # e.g. 24-Oct-2023 10:15:00
     "%d-%m-%Y",
     "%Y-%m-%d",
+    # 12-hour AM/PM formats
+    "%d-%m-%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%Y-%m-%d %I:%M:%S %p",
+    "%d-%m-%Y %I:%M %p",
+    "%d/%m/%Y %I:%M %p",
+    "%Y-%m-%d %I:%M %p",
+    # 2-digit year formats
+    "%d-%m-%y %H:%M:%S",
+    "%d/%m/%y %H:%M:%S",
+    "%d-%m-%y %H:%M",
+    "%d/%m/%y %H:%M",
+    "%y-%m-%d %H:%M:%S",
 ]
 
 

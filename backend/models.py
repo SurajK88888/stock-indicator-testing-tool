@@ -122,3 +122,42 @@ class BacktestTrade(SQLModel, table=True):
     net_points: float                # Difference between exit and entry
     net_pnl: float                   # Actual P&L amount
     derived_atm: Optional[int] = None # The derived anchor strike used
+
+
+# ---------------------------------------------------------------------------
+# Signal Data — External trading signals imported into the system.
+# ---------------------------------------------------------------------------
+class SignalData(SQLModel, table=True):
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        primary_key=True
+    )
+    signal_provider: str
+    dateTime: datetime
+    date: Optional[str] = None
+    time: Optional[str] = None
+    exchange: str
+    stock: str
+    script: int
+    type: str                  # "Call" or "Put" (translated from CE/PE)
+    expiry: Optional[str] = None
+    trade_type: Optional[str] = Field(default="Intraday")
+    signal: str                # "Buy" or "Sell"
+    entry_type: str            # Default to "Buy At" or user-selected fallback
+    entry_price: float
+    sl: float
+    sl_type: Optional[str] = None # e.g. "Points", "Percentage"
+    target_1: float
+    tp_type: Optional[str] = None # e.g. "Points", "Percentage"
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
+    target_4: Optional[float] = None
+    target_5: Optional[float] = None
+    target_6: Optional[float] = None
+    target_7: Optional[float] = None
+    target_8: Optional[float] = None
+    target_9: Optional[float] = None
+    target_10: Optional[float] = None
+    updatedBy: Optional[str] = None
+    updated_on: datetime = Field(default_factory=datetime.utcnow)
+

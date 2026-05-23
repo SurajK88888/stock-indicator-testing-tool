@@ -104,6 +104,13 @@ export default function Dashboard() {
   const [manualScript, setManualScript] = useState("");
   const [uniqueDates, setUniqueDates] = useState<string[]>([]);
   const [uniqueTimes, setUniqueTimes] = useState<string[]>([]);
+  // Display-only: shows the actual date/time range found in the file.
+  // NEVER written to filter state — filters stay empty unless user explicitly selects a value.
+  // KNOWN BUG FIXED: Previously, auto-populate wrote min_time/max_time into
+  // startTime/endTime filter state, causing rows to be silently dropped during
+  // ingestion even when the user selected no filter.
+  // REUSABLE: Separate display state from active filter state for any file-import form.
+  const [previewRange, setPreviewRange] = useState({ minDate: "", maxDate: "", minTime: "", maxTime: "" });
 
   // -- Validator Config State --
   // KNOWN BUG FIXED: stock was missing from valConfig — it was incorrectly
@@ -254,10 +261,22 @@ export default function Dashboard() {
   }, [activeTab]);
 
   // FIX: stores headers in per-type arrays, not a single shared array
+  // FIX: Reset date/time filters on every new file selection so stale date range
+  // from a previously ingested file does not filter out all rows of the new file.
+  // Without this, uploading File B after File A would apply File A's date range
+  // to File B, causing "No records to insert after filtering" error.
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
     setSelectedFile(file);
+
+    // Reset date/time range for all import types so auto-populate always
+    // reads fresh min/max values from the newly selected file
+    const dateReset = { startDate: "", endDate: "", startTime: "", endTime: "" };
+    setOptionsMap(prev => ({ ...prev, ...dateReset }));
+    setIndicatorMap(prev => ({ ...prev, ...dateReset }));
+    setSpotMap(prev => ({ ...prev, ...dateReset }));
+    setSignalMap(prev => ({ ...prev, ...dateReset }));
     setIsUploading(true);
     setUploadStatus("Extracting headers...");
     const formData = new FormData();
@@ -287,6 +306,7 @@ export default function Dashboard() {
     setPreviewData([]);
     setUniqueDates([]);
     setUniqueTimes([]);
+    setPreviewRange({ minDate: "", maxDate: "", minTime: "", maxTime: "" });
     setOptionsHeaders([]);
     setIndicatorHeaders([]);
     setSpotHeaders([]);
@@ -511,41 +531,16 @@ export default function Dashboard() {
         setPreviewData(data.preview || []);
         if (data.unique_dates) setUniqueDates(data.unique_dates);
         if (data.unique_times) setUniqueTimes(data.unique_times);
-        // Auto populate dates if empty
-        if (importType === "options") {
-          setOptionsMap(prev => ({
-            ...prev,
-            startDate: prev.startDate || data.min_date || "",
-            endDate: prev.endDate || data.max_date || "",
-            startTime: prev.startTime || data.min_time || "",
-            endTime: prev.endTime || data.max_time || ""
-          }));
-        } else if (importType === "indicator") {
-          setIndicatorMap(prev => ({
-            ...prev,
-            startDate: prev.startDate || data.min_date || "",
-            endDate: prev.endDate || data.max_date || "",
-            startTime: prev.startTime || data.min_time || "",
-            endTime: prev.endTime || data.max_time || ""
-          }));
-        } else if (importType === "signal") {
-          // Auto-populate date/time range for signal imports
-          setSignalMap(prev => ({
-            ...prev,
-            startDate: prev.startDate || data.min_date || "",
-            endDate: prev.endDate || data.max_date || "",
-            startTime: prev.startTime || data.min_time || "",
-            endTime: prev.endTime || data.max_time || ""
-          }));
-        } else {
-          setSpotMap(prev => ({
-            ...prev,
-            startDate: prev.startDate || data.min_date || "",
-            endDate: prev.endDate || data.max_date || "",
-            startTime: prev.startTime || data.min_time || "",
-            endTime: prev.endTime || data.max_time || ""
-          }));
-        }
+        // FIX: Store file range in display-only state — do NOT write into filter state.
+        // Filter state (startDate/endDate/startTime/endTime) stays empty = "All" by default.
+        // Filters are only applied when the user explicitly selects a value in the dropdown.
+        // This ensures ingestion imports ALL rows unless the user intentionally filters.
+        setPreviewRange({
+          minDate: data.min_date || "",
+          maxDate: data.max_date || "",
+          minTime: data.min_time || "",
+          maxTime: data.max_time || "",
+        });
       }
     } catch {
       // ignore
@@ -1038,7 +1033,7 @@ export default function Dashboard() {
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-primary flex items-center">Date Filter <InfoTooltip text="Only import rows falling within this exact date range." /></span>
                           <span className="text-[10px] text-slate-400">
-                            Range: {(importType === "options" ? optionsMap.startDate : importType === "signal" ? signalMap.startDate : indicatorMap.startDate) || 'All'} to {(importType === "options" ? optionsMap.endDate : importType === "signal" ? signalMap.endDate : indicatorMap.endDate) || 'All'}
+                            File Range: {previewRange.minDate || 'All'} to {previewRange.maxDate || 'All'}
                           </span>
                         </div>
                         {importType === "options" && renderHeaderDropdown(optionsMap.date, v => setOptionsMap({ ...optionsMap, date: v }), "Date Column", activeHeaders, "Map this if your file has a standalone Date column.")}
@@ -1088,7 +1083,7 @@ export default function Dashboard() {
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-primary flex items-center">Time Filter <InfoTooltip text="Only import rows falling within this exact time window each day." /></span>
                           <span className="text-[10px] text-slate-400">
-                            Range: {(importType === "options" ? optionsMap.startTime : importType === "signal" ? signalMap.startTime : indicatorMap.startTime) || 'All'} to {(importType === "options" ? optionsMap.endTime : importType === "signal" ? signalMap.endTime : indicatorMap.endTime) || 'All'}
+                            File Range: {previewRange.minTime || 'All'} to {previewRange.maxTime || 'All'}
                           </span>
                         </div>
                         {importType === "options" && renderHeaderDropdown(optionsMap.time, v => setOptionsMap({ ...optionsMap, time: v }), "Time Column", activeHeaders, "Map this if your file has a standalone Time column.")}

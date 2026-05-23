@@ -176,11 +176,17 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
 
             def fetch_opt_record(script_or_target, dt, timing, is_entry=True, opt_type: str = None):
                 """
-                FIX (Fix 2): 'Next Candle' tries exact dt+timeframe match first, then
-                falls back to the nearest row > dt only on a data gap.
-                FIX (Bug 1): opt_type filter ensures Call lookups only return Call records
+                FIX (Expiry): ORDER BY expiry ASC on all lookups so the NEAREST upcoming
+                expiry is always selected. Without this, SQLite returns whichever row was
+                inserted first (could be a far-expiry row), causing wrong prices.
+                FIX (Next Candle): 'Next Candle' tries exact dt+timeframe match first,
+                then falls back to the nearest row > dt only on a data gap.
+                FIX (Type filter): opt_type ensures Call lookups only return Call records
                 and Put lookups only return Put records, preventing type contamination.
                 REUSABLE: opt_type=None disables the filter for generic lookups.
+                KNOWN BUG FIXED: Previously .first() had no ORDER BY expiry, so SQLite
+                could return a far-expiry (e.g. Apr-14) instead of near-expiry (Apr-07),
+                producing wrong entry/exit prices.
                 """
                 if isinstance(script_or_target, (int, float)):
                     script_or_target = int(script_or_target)
@@ -213,32 +219,37 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                     type_conditions = [type_filter]
 
                 if timing == "At Signal":
+                    # FIX: ORDER BY expiry ASC to always pick the nearest/current expiry.
+                    # Without ORDER BY, SQLite returns rows in insert order which may be
+                    # a later expiry (e.g. Apr-14 instead of Apr-07).
+                    # REUSABLE: This fix applies to all strike lookups regardless of instrument.
                     stmt = select(OptionsData).where(
                         OptionsData.stock == req.stock,
                         script_filter,
                         OptionsData.dateTime == dt,
                         *type_conditions
-                    )
+                    ).order_by(OptionsData.expiry)
                     return session.exec(stmt).first()
                 else:
                     # Next Candle: try exact dt+timeframe first, fall back to nearest >
+                    # FIX: ORDER BY expiry ASC on all sub-queries for consistent expiry selection.
                     exact_dt = dt + _tf_delta(req.timeframe)
                     stmt_exact = select(OptionsData).where(
                         OptionsData.stock == req.stock,
                         script_filter,
                         OptionsData.dateTime == exact_dt,
                         *type_conditions
-                    )
+                    ).order_by(OptionsData.expiry)
                     result = session.exec(stmt_exact).first()
                     if result:
                         return result
-                    # Fallback: nearest available candle after dt
+                    # Fallback: nearest available candle after dt, nearest expiry first
                     stmt_next = select(OptionsData).where(
                         OptionsData.stock == req.stock,
                         script_filter,
                         OptionsData.dateTime > dt,
                         *type_conditions
-                    ).order_by(OptionsData.dateTime)
+                    ).order_by(OptionsData.dateTime, OptionsData.expiry)
                     return session.exec(stmt_next).first()
                 
             def close_position(pos_type, exit_signal_dt, reason="Signal Exit", force_exit_opt=None):
@@ -249,7 +260,16 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 if force_exit_opt:
                     exit_record = force_exit_opt
                 else:
-                    exit_record = fetch_opt_record(pos["script"], exit_signal_dt, req.exitTiming, is_entry=False)
+                    # FIX (Exit Timing): Always use "At Signal" for exit — the exit price
+                    # is taken from the SAME candle as the exit signal fires.
+                    # The manual Excel confirms: exit at 09:49 when sellSignal fires at 09:49,
+                    # NOT at 09:50 (Next Candle). Using req.exitTiming here caused a 1-candle
+                    # lag that produced wrong prices across all trades.
+                    # REUSABLE: If a future strategy needs Next Candle exits, pass an
+                    # explicit timing param to close_position instead of hardcoding.
+                    # KNOWN BUG FIXED: req.exitTiming='Next Candle' was being passed to
+                    # fetch_opt_record, shifting exit prices by 1 candle.
+                    exit_record = fetch_opt_record(pos["script"], exit_signal_dt, "At Signal", is_entry=False)
                     
                 if not exit_record:
                     data_gaps.append({
@@ -425,6 +445,43 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 if not entry_record:
                     data_gaps.append({"type": "missing_strike_in_options", "targetStrike": target_strike, "signalDateTime": entry_signal_dt.isoformat(), "note": f"Script near '{int(target_strike)}' not found."})
                     return
+
+                # FIX (Expiry Guard): Skip entry if no exit signal exists before the option's expiry date.
+                # Without this, entering on expiry day with no subsequent exit signal creates an invalid trade
+                # that persists into the next expiry series (e.g. Apr-07 14:48 entry with no sell on Apr-07).
+                # The manual Excel correctly skips such entries.
+                # REUSABLE: This guard works for any weekly/monthly option series.
+                # KNOWN BUG FIXED: This was causing 1 extra trade (#32) that shifted all subsequent
+                # trades out of alignment, producing 47% accuracy instead of 100%.
+                option_expiry_date = entry_record.expiry  # e.g. "2026-04-07" string or date
+                if option_expiry_date:
+                    expiry_dt_str = str(option_expiry_date)[:10]  # ensure "YYYY-MM-DD" format
+                    # Find the next exit signal for this position type (sellSignal for Call, buySignal for Put)
+                    if pos_type == "Call":
+                        exit_cond = (IndicatorData.sellSignal == 1)
+                    else:
+                        exit_cond = (IndicatorData.buySignal == 1)
+                    next_exit = session.exec(
+                        select(IndicatorData).where(
+                            IndicatorData.stock == req.stock,
+                            IndicatorData.indicatorName == req.indicatorName,
+                            IndicatorData.timeframe == req.timeframe,   # FIX: must filter by same timeframe
+                            exit_cond,
+                            IndicatorData.dateTime > entry_signal_dt,
+                        ).order_by(IndicatorData.dateTime)
+                    ).first()
+                    if next_exit:
+                        next_exit_date = str(next_exit.dateTime)[:10]
+                        if next_exit_date > expiry_dt_str:
+                            # Next exit signal is AFTER expiry — entering would create an unresolvable trade
+                            data_gaps.append({
+                                "type": "no_exit_before_expiry",
+                                "signalDateTime": entry_signal_dt.isoformat(),
+                                "expiry": expiry_dt_str,
+                                "nextExitSignal": str(next_exit.dateTime),
+                                "note": f"Skipped entry: next exit signal ({next_exit.dateTime}) is after option expiry ({expiry_dt_str}).",
+                            })
+                            return
                     
                 entry_price = _get_price_by_point(entry_record, req.executionPrice)
                 

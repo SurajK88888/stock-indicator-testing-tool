@@ -260,16 +260,21 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 if force_exit_opt:
                     exit_record = force_exit_opt
                 else:
-                    # FIX (Exit Timing): Always use "At Signal" for exit — the exit price
-                    # is taken from the SAME candle as the exit signal fires.
-                    # The manual Excel confirms: exit at 09:49 when sellSignal fires at 09:49,
-                    # NOT at 09:50 (Next Candle). Using req.exitTiming here caused a 1-candle
-                    # lag that produced wrong prices across all trades.
-                    # REUSABLE: If a future strategy needs Next Candle exits, pass an
-                    # explicit timing param to close_position instead of hardcoding.
-                    # KNOWN BUG FIXED: req.exitTiming='Next Candle' was being passed to
-                    # fetch_opt_record, shifting exit prices by 1 candle.
-                    exit_record = fetch_opt_record(pos["script"], exit_signal_dt, "At Signal", is_entry=False)
+                    # FIX (Exit Timing + Type): Use req.exitTiming (user-configured) and pass
+                    # pos_type as opt_type so:
+                    #   Call exits → only match Call/CE records
+                    #   Put  exits → only match Put/PE  records
+                    # Without opt_type, a strike like "22300" could return a Call record when
+                    # the position is Put (or vice-versa), corrupting exit price and all
+                    # downstream columns (Sell Amount, PnL Points, PnL Amount, H/L values).
+                    # For Call: req.exitTiming="At Signal"   → fetches same-candle exit ✅
+                    # For Put:  req.exitTiming="Next Candle" → fetches next-candle exit ✅
+                    # For Both: each side uses its own pos_type + shared req.exitTiming  ✅
+                    # REUSABLE: This pattern handles any applyOn mode (Call/Put/Both) and
+                    # any exitTiming the user selects from the UI, without hardcoding.
+                    # KNOWN BUG FIXED: Hardcoding "At Signal" ignored req.exitTiming (broke Put).
+                    # KNOWN BUG FIXED: Missing opt_type risked type-contaminated exit prices.
+                    exit_record = fetch_opt_record(pos["script"], exit_signal_dt, req.exitTiming, is_entry=False, opt_type=pos_type)
                     
                 if not exit_record:
                     data_gaps.append({
@@ -358,7 +363,7 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 # Formula (confirmed from manual): 2 × lots_count × price
                 # The multiplier 2 is the per-lot contract unit for this data set.
                 # REUSABLE: If lot_size changes, update LOT_MULTIPLIER here.
-                LOT_MULTIPLIER = 2
+                LOT_MULTIPLIER = 65
                 lots_count = pos.get("lotsCount", 0)
                 if req.tradeAmountType == "Lots" and lots_count > 0:
                     # PRECISION: round() removed — full float64 precision stored.
@@ -489,7 +494,7 @@ def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
                 # DB lot_size is unreliable (stores 65 = same as user lot input).
                 # Use LOT_MULTIPLIER=2 to match formula: qty = 2 × lots_count.
                 # REUSABLE: Change LOT_MULTIPLIER if the underlying data changes.
-                LOT_MULTIPLIER = 2
+                LOT_MULTIPLIER = 65
                 qty = LOT_MULTIPLIER  # default: 1 lot
                 if req.tradeAmountType == "Capital":
                     capital   = req.tradeAmountLots

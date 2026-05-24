@@ -42,6 +42,11 @@ def _get_price_by_point(record: OptionsData, point: str) -> float:
     (e.g. 283.1625 instead of 283.16).
     REUSABLE: Centralised price retrieval — all trade P&L flows through here.
     """
+    if point == "Open-Close Average":
+        return round((record.open + record.close) / 2.0, 4)
+    if point == "High-Low Average":
+        return round((record.high + record.low) / 2.0, 4)
+        
     mapping = {
         "Open": record.open,
         "High": record.high,

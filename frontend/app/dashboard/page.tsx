@@ -1688,6 +1688,8 @@ export default function Dashboard() {
                         <option value="High">High</option>
                         <option value="Low">Low</option>
                         <option value="Close">Close</option>
+                        <option value="Open-Close Average">Open-Close Average</option>
+                        <option value="High-Low Average">High-Low Average</option>
                       </select>
                     </div>
 

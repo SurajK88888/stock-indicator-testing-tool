@@ -44,18 +44,24 @@ def _get_all_tables(session: Session) -> list[dict]:
         ).first()
         row_count = count_result[0] if count_result else 0
         
-        # Check if table has updated_on column
+        # Check if table has updated_on, expiry, or type columns
         has_updated_on = False
+        has_expiry = False
+        has_type = False
         try:
             columns = session.exec(text(f'PRAGMA table_info("{table_name}")')).all()
             has_updated_on = any(col[1] == "updated_on" for col in columns)
+            has_expiry = any(col[1] == "expiry" for col in columns)
+            has_type = any(col[1] == "type" for col in columns)
         except Exception:
             pass
 
         tables.append({
             "name": table_name, 
             "rowCount": row_count,
-            "hasUpdatedOn": has_updated_on
+            "hasUpdatedOn": has_updated_on,
+            "hasExpiry": has_expiry,
+            "hasType": has_type
         })
 
     return tables
@@ -74,34 +80,36 @@ def list_tables(session: Session = Depends(get_session)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GET /api/admin/tables/{table_name}/timestamps — Get unique updated_on values
+# GET /api/admin/tables/{table_name}/filters — Get unique values for filters
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/tables/{table_name}/timestamps")
-def get_table_timestamps(table_name: str, session: Session = Depends(get_session)):
-    """Returns list of unique ingestion timestamps (updated_on) for a table."""
+@router.get("/tables/{table_name}/filters")
+def get_table_filters(table_name: str, session: Session = Depends(get_session)):
+    """Returns unique ingestion timestamps, expiries, and types for a table."""
     # Security: validate table name
     if not table_name.replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="Invalid table name.")
 
-    # Check if column exists
     columns = session.exec(text(f'PRAGMA table_info("{table_name}")')).all()
-    if not any(col[1] == "updated_on" for col in columns):
-        return {"timestamps": []}
+    col_names = [col[1] for col in columns]
 
-    query = text(f'SELECT DISTINCT updated_on FROM "{table_name}" WHERE updated_on IS NOT NULL ORDER BY updated_on DESC')
-    result = session.exec(query).all()
-    
-    # SQLite returns timestamps as strings or datetime objects depending on driver/dialect
-    # We return them as ISO strings for the frontend
-    timestamps = []
-    for row in result:
-        ts = row[0]
-        if hasattr(ts, "isoformat"):
-            timestamps.append(ts.isoformat())
-        else:
-            timestamps.append(str(ts))
-            
-    return {"timestamps": timestamps}
+    filters = {"timestamps": [], "expiries": [], "types": []}
+
+    if "updated_on" in col_names:
+        query = text(f'SELECT DISTINCT updated_on FROM "{table_name}" WHERE updated_on IS NOT NULL ORDER BY updated_on DESC')
+        result = session.exec(query).all()
+        filters["timestamps"] = [ts[0].isoformat() if hasattr(ts[0], "isoformat") else str(ts[0]) for ts in result]
+
+    if "expiry" in col_names:
+        query = text(f'SELECT DISTINCT expiry FROM "{table_name}" WHERE expiry IS NOT NULL ORDER BY expiry DESC')
+        result = session.exec(query).all()
+        filters["expiries"] = [ts[0].isoformat() if hasattr(ts[0], "isoformat") else str(ts[0]) for ts in result]
+
+    if "type" in col_names:
+        query = text(f'SELECT DISTINCT type FROM "{table_name}" WHERE type IS NOT NULL ORDER BY type ASC')
+        result = session.exec(query).all()
+        filters["types"] = [str(ts[0]) for ts in result]
+
+    return filters
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,11 +123,13 @@ def get_table_timestamps(table_name: str, session: Session = Depends(get_session
 def clear_table(
     table_name: str, 
     updated_on: Optional[str] = Query(None),
+    expiry: Optional[str] = Query(None),
+    opt_type: Optional[str] = Query(None, alias="type"),
     session: Session = Depends(get_session)
 ):
     """
     Deletes rows from the specified table while preserving its schema.
-    If updated_on is provided, deletes only records matching that timestamp.
+    If filters are provided, deletes only records matching those conditions.
     Raises 404 if the table doesn't exist.
     """
     # Security: validate table name
@@ -138,20 +148,36 @@ def clear_table(
             detail=f"Table '{table_name}' does not exist in the database."
         )
 
-    # Build the DELETE query
-    if updated_on:
-        # Verify column exists before filtering
-        columns = session.exec(text(f'PRAGMA table_info("{table_name}")')).all()
-        if not any(col[1] == "updated_on" for col in columns):
-            raise HTTPException(status_code=400, detail=f"Table '{table_name}' does not have an 'updated_on' column.")
+    # Verify columns exist before filtering
+    columns = session.exec(text(f'PRAGMA table_info("{table_name}")')).all()
+    col_names = [col[1] for col in columns]
 
-        count_query = text(f'SELECT COUNT(*) FROM "{table_name}" WHERE updated_on = :ts')
-        delete_query = text(f'DELETE FROM "{table_name}" WHERE updated_on = :ts')
-        params = {"ts": updated_on}
-    else:
-        count_query = text(f'SELECT COUNT(*) FROM "{table_name}"')
-        delete_query = text(f'DELETE FROM "{table_name}"')
-        params = {}
+    conditions = []
+    params = {}
+
+    if updated_on:
+        if "updated_on" not in col_names:
+            raise HTTPException(status_code=400, detail=f"Table '{table_name}' does not have an 'updated_on' column.")
+        conditions.append("updated_on = :ts")
+        params["ts"] = updated_on
+
+    if expiry:
+        if "expiry" not in col_names:
+            raise HTTPException(status_code=400, detail=f"Table '{table_name}' does not have an 'expiry' column.")
+        conditions.append("expiry = :expiry")
+        params["expiry"] = expiry
+
+    if opt_type:
+        if "type" not in col_names:
+            raise HTTPException(status_code=400, detail=f"Table '{table_name}' does not have a 'type' column.")
+        conditions.append("type = :type")
+        params["type"] = opt_type
+
+    base_query = f'FROM "{table_name}"'
+    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    count_query = text(f'SELECT COUNT(*) {base_query}{where_clause}')
+    delete_query = text(f'DELETE {base_query}{where_clause}')
 
     # Count rows before deletion
     count_result = session.exec(count_query, params=params).first()
@@ -161,7 +187,8 @@ def clear_table(
     session.exec(delete_query, params=params)
     session.commit()
 
-    filter_msg = f" with updated_on='{updated_on}'" if updated_on else ""
+    filters_used = [f"{k}='{v}'" for k, v in [("updated_on", updated_on), ("expiry", expiry), ("type", opt_type)] if v]
+    filter_msg = " with " + " AND ".join(filters_used) if filters_used else ""
     return {
         "success": True,
         "table": table_name,

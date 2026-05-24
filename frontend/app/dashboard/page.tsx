@@ -140,12 +140,16 @@ export default function Dashboard() {
 
   const [clearDb, setClearDb] = useState<{
     open: boolean;
-    tables: { name: string; rowCount: number; hasUpdatedOn?: boolean }[];
+    tables: { name: string; rowCount: number; hasUpdatedOn?: boolean; hasExpiry?: boolean; hasType?: boolean }[];
     selected: string;
     loading: boolean;
     result: string;
     timestamps: string[];
     selectedTimestamp: string;
+    expiries: string[];
+    selectedExpiry: string;
+    types: string[];
+    selectedType: string;
   }>({
     open: false,
     tables: [],
@@ -154,6 +158,10 @@ export default function Dashboard() {
     result: "",
     timestamps: [],
     selectedTimestamp: "",
+    expiries: [],
+    selectedExpiry: "",
+    types: [],
+    selectedType: "",
   });
 
   const [validatorStatus, setValidatorStatus] = useState("");
@@ -328,7 +336,7 @@ export default function Dashboard() {
       handleSignalIngestSubmit(e);
       return;
     }
-    
+
     setUploadStatus("Ingesting data...");
     const fd = new FormData();
     fd.append("file", selectedFile);
@@ -389,12 +397,12 @@ export default function Dashboard() {
     if (!selectedFile) { setUploadStatus("Please select a file first."); return; }
     const provider = signalMap.signal_provider === "Other" ? signalMap.signal_providerOther : signalMap.signal_provider;
     if (!provider) { setUploadStatus("Please enter a Signal Source Name."); return; }
-    
+
     setUploadStatus("Ingesting signal data...");
     const fd = new FormData();
     fd.append("file", selectedFile);
     fd.append("signal_provider", provider);
-    
+
     const m = signalMap;
     const mappings: Record<string, string> = {};
     // Signal files always have separate Date + Time columns — no combined dateTime mapping.
@@ -424,10 +432,10 @@ export default function Dashboard() {
 
     const cleanMappings = Object.fromEntries(Object.entries(mappings).filter(([k, v]) => k && v));
     fd.append("mappings", JSON.stringify(cleanMappings));
-    
+
     const exchange = m.exchange === "Other" ? m.exchangeOther : m.exchange;
     const stock = m.stock === "Other" ? m.stockOther : m.stock;
-    
+
     if (exchange) fd.append("exchange", exchange);
     if (stock) fd.append("stock", stock);
     // date_format / time_format removed: backend auto-detects from DATETIME_FORMATS list.
@@ -449,8 +457,8 @@ export default function Dashboard() {
           .then(r => r.json())
           .then(d => { if (Array.isArray(d.providers)) setSignalProviderOptions(d.providers); });
       }
-    } catch { 
-      setUploadStatus("Failed to contact backend. Ensure uvicorn is running."); 
+    } catch {
+      setUploadStatus("Failed to contact backend. Ensure uvicorn is running.");
     }
   };
 
@@ -554,7 +562,7 @@ export default function Dashboard() {
       if (selectedFile) fetchPreview();
     }, 500);
     return () => clearTimeout(timer);
-  // signalMap added so preview re-triggers when signal column mappings change
+    // signalMap added so preview re-triggers when signal column mappings change
   }, [optionsMap, indicatorMap, spotMap, signalMap, importType, selectedFile, manualScript]);
 
   // FIX: real POST /api/validate + job polling — no more mock setTimeout
@@ -573,7 +581,7 @@ export default function Dashboard() {
       tradeAmountType: valConfig.tradeAmountType,
       tradeAmountLots: parseFloat(valConfig.tradeAmountLots) || 0,
       repetitiveSignals: valConfig.repetitiveSignals,
-      positionOpenEndDate: valConfig.positionOpenEndDate ? valConfig.positionOpenEndDate.replace("T", " ") + " 00:00:00" : null,
+      positionOpenEndDate: valConfig.endDate ? valConfig.endDate.replace("T", " ") + " 00:00:00" : null,
       positionOpenEndAction: valConfig.positionOpenEndAction,
       startDate: valConfig.startDate || null, endDate: valConfig.endDate || null,
       timeframe: valConfig.timeframe || "1m",
@@ -634,21 +642,30 @@ export default function Dashboard() {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (clearDb.open && clearDb.selected) {
-      // Find if selected table has updated_on
+      // Find if selected table has updated_on, expiry, or type
       const table = clearDb.tables.find(t => t.name === clearDb.selected);
-      if (table && table.hasUpdatedOn) {
-        fetch(`http://127.0.0.1:8000/api/admin/tables/${clearDb.selected}/timestamps`)
+      if (table && (table.hasUpdatedOn || table.hasExpiry || table.hasType)) {
+        fetch(`http://127.0.0.1:8000/api/admin/tables/${clearDb.selected}/filters`)
           .then(r => r.json())
           .then(data => {
             setClearDb(prev => ({
               ...prev,
               timestamps: data.timestamps || [],
-              selectedTimestamp: "" // Reset selection when table changes
+              expiries: data.expiries || [],
+              types: data.types || [],
+              selectedTimestamp: "", // Reset selection when table changes
+              selectedExpiry: "",
+              selectedType: ""
             }));
           })
-          .catch(() => setClearDb(prev => ({ ...prev, timestamps: [] })));
+          .catch(() => setClearDb(prev => ({
+            ...prev, timestamps: [], expiries: [], types: []
+          })));
       } else {
-        setClearDb(prev => ({ ...prev, timestamps: [], selectedTimestamp: "" }));
+        setClearDb(prev => ({
+          ...prev, timestamps: [], expiries: [], types: [],
+          selectedTimestamp: "", selectedExpiry: "", selectedType: ""
+        }));
       }
     }
   }, [clearDb.selected, clearDb.open]);
@@ -670,6 +687,10 @@ export default function Dashboard() {
         result: "",
         timestamps: [],
         selectedTimestamp: "",
+        expiries: [],
+        selectedExpiry: "",
+        types: [],
+        selectedType: "",
       }));
     } catch {
       setClearDb(prev => ({ ...prev, open: true, tables: [], result: "Failed to fetch table list from backend." }));
@@ -680,14 +701,20 @@ export default function Dashboard() {
     if (!clearDb.selected) return;
 
     // Warning for full table deletion
-    if (!clearDb.selectedTimestamp) {
-      const confirmed = window.confirm(`WARNING: No "Updated On" filter selected. This will delete ALL ${clearDb.tables.find(t => t.name === clearDb.selected)?.rowCount || ""} records from "${clearDb.selected}". Are you sure you want to proceed?`);
+    if (!clearDb.selectedTimestamp && !clearDb.selectedExpiry && !clearDb.selectedType) {
+      const confirmed = window.confirm(`WARNING: No filters selected. This will delete ALL ${clearDb.tables.find(t => t.name === clearDb.selected)?.rowCount || ""} records from "${clearDb.selected}". Are you sure you want to proceed?`);
       if (!confirmed) return;
     }
 
     setClearDb(prev => ({ ...prev, loading: true, result: "" }));
     try {
-      const url = `http://127.0.0.1:8000/api/admin/tables/${clearDb.selected}/clear${clearDb.selectedTimestamp ? `?updated_on=${encodeURIComponent(clearDb.selectedTimestamp)}` : ""}`;
+      const params = new URLSearchParams();
+      if (clearDb.selectedTimestamp) params.append("updated_on", clearDb.selectedTimestamp);
+      if (clearDb.selectedExpiry) params.append("expiry", clearDb.selectedExpiry);
+      if (clearDb.selectedType) params.append("type", clearDb.selectedType);
+
+      const qs = params.toString();
+      const url = `http://127.0.0.1:8000/api/admin/tables/${clearDb.selected}/clear${qs ? `?${qs}` : ""}`;
       const res = await fetch(url, { method: "DELETE" });
       const data = await res.json();
       if (data.success) {
@@ -700,6 +727,8 @@ export default function Dashboard() {
           tables: refreshData.tables || prev.tables,
           result: data.message,
           selectedTimestamp: "", // Reset after clear
+          selectedExpiry: "",
+          selectedType: "",
         }));
       } else {
         setClearDb(prev => ({ ...prev, loading: false, result: data.detail || "An error occurred." }));
@@ -785,31 +814,69 @@ export default function Dashboard() {
               </select>
             </div>
 
-            {/* Filter Selector (Updated On) */}
-            <div className="flex flex-col gap-1 mb-4">
-              <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Filter by "Updated On" (Optional)</label>
-              <select
-                value={clearDb.selectedTimestamp}
-                onChange={(e) => setClearDb(prev => ({ ...prev, selectedTimestamp: e.target.value }))}
-                className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={!clearDb.tables.find(t => t.name === clearDb.selected)?.hasUpdatedOn}
-              >
-                <option value="">Show All (Delete everything)</option>
-                {clearDb.timestamps.map(ts => (
-                  <option key={ts} value={ts}>
-                    {ts.replace("T", " ")}
-                  </option>
-                ))}
-              </select>
-              {clearDb.selected && clearDb.tables.find(t => t.name === clearDb.selected)?.hasUpdatedOn && clearDb.timestamps.length === 0 && (
-                <p className="text-[10px] text-slate-500 mt-1 italic">Note: Records ingested before the update don't have a timestamp. Ingest new data to see filters here.</p>
+            {/* Filter Selectors Container */}
+            <div className="flex flex-col gap-3 mb-4">
+              {/* Updated On */}
+              {clearDb.tables.find(t => t.name === clearDb.selected)?.hasUpdatedOn && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Filter by "Updated On" (Optional)</label>
+                  <select
+                    value={clearDb.selectedTimestamp}
+                    onChange={(e) => setClearDb(prev => ({ ...prev, selectedTimestamp: e.target.value }))}
+                    className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50"
+                  >
+                    <option value="">Show All</option>
+                    {clearDb.timestamps.map(ts => (
+                      <option key={ts} value={ts}>{ts.replace("T", " ")}</option>
+                    ))}
+                  </select>
+                  {clearDb.timestamps.length === 0 && (
+                    <p className="text-[10px] text-slate-500 mt-1 italic">Note: Records ingested before the update don't have a timestamp. Ingest new data to see filters here.</p>
+                  )}
+                </div>
               )}
+
+              <div className="grid grid-cols-2 gap-3">
+                {/* Expiry Time */}
+                {clearDb.tables.find(t => t.name === clearDb.selected)?.hasExpiry && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Filter by "Expiry Time" (Optional)</label>
+                    <select
+                      value={clearDb.selectedExpiry}
+                      onChange={(e) => setClearDb(prev => ({ ...prev, selectedExpiry: e.target.value }))}
+                      className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50"
+                    >
+                      <option value="">Show All</option>
+                      {clearDb.expiries.map(exp => (
+                        <option key={exp} value={exp}>{exp}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Type */}
+                {clearDb.tables.find(t => t.name === clearDb.selected)?.hasType && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Filter by "Type" (Optional)</label>
+                    <select
+                      value={clearDb.selectedType}
+                      onChange={(e) => setClearDb(prev => ({ ...prev, selectedType: e.target.value }))}
+                      className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50"
+                    >
+                      <option value="">Show All</option>
+                      {clearDb.types.map(t => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Row count warning */}
             {clearDb.selected && (() => {
               const tbl = clearDb.tables.find(t => t.name === clearDb.selected);
-              const isFiltered = !!clearDb.selectedTimestamp;
+              const isFiltered = !!(clearDb.selectedTimestamp || clearDb.selectedExpiry || clearDb.selectedType);
 
               if (!tbl) return null;
 
@@ -818,7 +885,7 @@ export default function Dashboard() {
                   <p className="text-sm">
                     {isFiltered ? (
                       <span className="text-primary/80">
-                        ⚠ Deleting only records ingested on <span className="font-bold text-primary">{clearDb.selectedTimestamp.replace("T", " ")}</span>
+                        ⚠ Deleting only matching records
                       </span>
                     ) : (
                       <span className="text-red-300">
@@ -1133,103 +1200,103 @@ export default function Dashboard() {
 
                   {/* OHLCV Map — options/indicator */}
                   {importType !== "signal" && (
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                    {renderHeaderDropdown(importType === "options" ? optionsMap.open : indicatorMap.open, v => importType === "options" ? setOptionsMap({ ...optionsMap, open: v }) : setIndicatorMap({ ...indicatorMap, open: v }), "Open", activeHeaders, "Opening price of the candle")}
-                    {renderHeaderDropdown(importType === "options" ? optionsMap.high : indicatorMap.high, v => importType === "options" ? setOptionsMap({ ...optionsMap, high: v }) : setIndicatorMap({ ...indicatorMap, high: v }), "High", activeHeaders, "Highest price of the candle")}
-                    {renderHeaderDropdown(importType === "options" ? optionsMap.low : indicatorMap.low, v => importType === "options" ? setOptionsMap({ ...optionsMap, low: v }) : setIndicatorMap({ ...indicatorMap, low: v }), "Low", activeHeaders, "Lowest price of the candle")}
-                    {renderHeaderDropdown(importType === "options" ? optionsMap.close : indicatorMap.close, v => importType === "options" ? setOptionsMap({ ...optionsMap, close: v }) : setIndicatorMap({ ...indicatorMap, close: v }), "Close", activeHeaders, "Closing price of the candle")}
-                    {renderHeaderDropdown(importType === "options" ? optionsMap.volume : indicatorMap.volume, v => importType === "options" ? setOptionsMap({ ...optionsMap, volume: v }) : setIndicatorMap({ ...indicatorMap, volume: v }), "Volume", activeHeaders, "Trading volume (optional)")}
-                  </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                      {renderHeaderDropdown(importType === "options" ? optionsMap.open : indicatorMap.open, v => importType === "options" ? setOptionsMap({ ...optionsMap, open: v }) : setIndicatorMap({ ...indicatorMap, open: v }), "Open", activeHeaders, "Opening price of the candle")}
+                      {renderHeaderDropdown(importType === "options" ? optionsMap.high : indicatorMap.high, v => importType === "options" ? setOptionsMap({ ...optionsMap, high: v }) : setIndicatorMap({ ...indicatorMap, high: v }), "High", activeHeaders, "Highest price of the candle")}
+                      {renderHeaderDropdown(importType === "options" ? optionsMap.low : indicatorMap.low, v => importType === "options" ? setOptionsMap({ ...optionsMap, low: v }) : setIndicatorMap({ ...indicatorMap, low: v }), "Low", activeHeaders, "Lowest price of the candle")}
+                      {renderHeaderDropdown(importType === "options" ? optionsMap.close : indicatorMap.close, v => importType === "options" ? setOptionsMap({ ...optionsMap, close: v }) : setIndicatorMap({ ...indicatorMap, close: v }), "Close", activeHeaders, "Closing price of the candle")}
+                      {renderHeaderDropdown(importType === "options" ? optionsMap.volume : indicatorMap.volume, v => importType === "options" ? setOptionsMap({ ...optionsMap, volume: v }) : setIndicatorMap({ ...indicatorMap, volume: v }), "Volume", activeHeaders, "Trading volume (optional)")}
+                    </div>
                   )}
 
                   {/* Base Setup Map */}
                   {importType !== "signal" && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
 
-                    <div className="flex flex-col gap-1 w-full">
-                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Exchange</label>
-                      <select
-                        value={importType === "options" ? optionsMap.exchange : indicatorMap.exchange}
-                        onChange={(e) => importType === "options" ? setOptionsMap({ ...optionsMap, exchange: e.target.value }) : setIndicatorMap({ ...indicatorMap, exchange: e.target.value })}
-                        className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                      >
-                        <option value="NSE">NSE</option>
-                        <option value="BSE">BSE</option>
-                        <option value="Other">Other</option>
-                      </select>
-                      {((importType === "options" && optionsMap.exchange === "Other") || (importType === "indicator" && indicatorMap.exchange === "Other")) && (
-                        <div className="mt-2 animate-in slide-in-from-top-2">
-                          <input type="text" className="w-full bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter custom exchange" />
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex flex-col gap-1 w-full">
-                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Stock</label>
-                      <select
-                        value={importType === "options" ? optionsMap.stock : indicatorMap.stock}
-                        onChange={(e) => importType === "options" ? setOptionsMap({ ...optionsMap, stock: e.target.value }) : setIndicatorMap({ ...indicatorMap, stock: e.target.value })}
-                        className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                      >
-                        <option value="NIFTY">NIFTY</option>
-                        <option value="Sensex">Sensex</option>
-                        <option value="Other">Other</option>
-                      </select>
-                      {((importType === "options" && optionsMap.stock === "Other") || (importType === "indicator" && indicatorMap.stock === "Other")) && (
-                        <div className="mt-2 animate-in slide-in-from-top-2">
-                          <input type="text" className="w-full bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter custom stock" />
-                        </div>
-                      )}
-                    </div>
-
-                    {importType === "options" && (
-                      <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6">
-                        {renderHeaderDropdown(optionsMap.script, v => setOptionsMap({ ...optionsMap, script: v }), "Script Column", activeHeaders, "Map this to the 'Script' column in your file (e.g. 24750).")}
-
-                        <div className="flex flex-col gap-1 w-full">
-                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Type</label>
-                          <select
-                            value={optionsMap.type}
-                            onChange={(e) => setOptionsMap({ ...optionsMap, type: e.target.value })}
-                            className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                          >
-                            <option value="Call">Call</option>
-                            <option value="Put">Put</option>
-                            <option value="Other">Other</option>
-                          </select>
-                          {optionsMap.type === "Other" && (
-                            <div className="flex flex-col gap-1 w-full animate-in slide-in-from-right-4">
-                              <label className="text-xs text-primary font-bold uppercase tracking-wider">Custom Type</label>
-                              <input type="text" value={optionsMap.typeOther} onChange={(e) => setOptionsMap({ ...optionsMap, typeOther: e.target.value })} className="bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Type" />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex flex-col gap-1 w-full">
-                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Expiry</label>
-                          <input type="date" value={optionsMap.expiry} onChange={(e) => setOptionsMap({ ...optionsMap, expiry: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50 [color-scheme:dark]" />
-                        </div>
-                      </div>
-                    )}
-
-                    {(importType === "indicator" || importType === "options") && (
-                      <div className="flex flex-col gap-1 w-full md:col-span-2 mt-2">
-                        <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Updated By</label>
-                        <input
-                          type="text"
-                          value={importType === "options" ? optionsMap.updatedBy : indicatorMap.updatedBy}
-                          onChange={(e) => importType === "options"
-                            ? setOptionsMap({ ...optionsMap, updatedBy: e.target.value })
-                            : setIndicatorMap({ ...indicatorMap, updatedBy: e.target.value })
-                          }
+                      <div className="flex flex-col gap-1 w-full">
+                        <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Exchange</label>
+                        <select
+                          value={importType === "options" ? optionsMap.exchange : indicatorMap.exchange}
+                          onChange={(e) => importType === "options" ? setOptionsMap({ ...optionsMap, exchange: e.target.value }) : setIndicatorMap({ ...indicatorMap, exchange: e.target.value })}
                           className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                          placeholder="Enter your username (e.g. admin)"
-                        />
+                        >
+                          <option value="NSE">NSE</option>
+                          <option value="BSE">BSE</option>
+                          <option value="Other">Other</option>
+                        </select>
+                        {((importType === "options" && optionsMap.exchange === "Other") || (importType === "indicator" && indicatorMap.exchange === "Other")) && (
+                          <div className="mt-2 animate-in slide-in-from-top-2">
+                            <input type="text" className="w-full bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter custom exchange" />
+                          </div>
+                        )}
                       </div>
-                    )}
+
+                      <div className="flex flex-col gap-1 w-full">
+                        <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Stock</label>
+                        <select
+                          value={importType === "options" ? optionsMap.stock : indicatorMap.stock}
+                          onChange={(e) => importType === "options" ? setOptionsMap({ ...optionsMap, stock: e.target.value }) : setIndicatorMap({ ...indicatorMap, stock: e.target.value })}
+                          className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                        >
+                          <option value="NIFTY">NIFTY</option>
+                          <option value="Sensex">Sensex</option>
+                          <option value="Other">Other</option>
+                        </select>
+                        {((importType === "options" && optionsMap.stock === "Other") || (importType === "indicator" && indicatorMap.stock === "Other")) && (
+                          <div className="mt-2 animate-in slide-in-from-top-2">
+                            <input type="text" className="w-full bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter custom stock" />
+                          </div>
+                        )}
+                      </div>
+
+                      {importType === "options" && (
+                        <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6">
+                          {renderHeaderDropdown(optionsMap.script, v => setOptionsMap({ ...optionsMap, script: v }), "Script Column", activeHeaders, "Map this to the 'Script' column in your file (e.g. 24750).")}
+
+                          <div className="flex flex-col gap-1 w-full">
+                            <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Type</label>
+                            <select
+                              value={optionsMap.type}
+                              onChange={(e) => setOptionsMap({ ...optionsMap, type: e.target.value })}
+                              className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                            >
+                              <option value="Call">Call</option>
+                              <option value="Put">Put</option>
+                              <option value="Other">Other</option>
+                            </select>
+                            {optionsMap.type === "Other" && (
+                              <div className="flex flex-col gap-1 w-full animate-in slide-in-from-right-4">
+                                <label className="text-xs text-primary font-bold uppercase tracking-wider">Custom Type</label>
+                                <input type="text" value={optionsMap.typeOther} onChange={(e) => setOptionsMap({ ...optionsMap, typeOther: e.target.value })} className="bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Type" />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col gap-1 w-full">
+                            <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Expiry</label>
+                            <input type="date" value={optionsMap.expiry} onChange={(e) => setOptionsMap({ ...optionsMap, expiry: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50 [color-scheme:dark]" />
+                          </div>
+                        </div>
+                      )}
+
+                      {(importType === "indicator" || importType === "options") && (
+                        <div className="flex flex-col gap-1 w-full md:col-span-2 mt-2">
+                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Updated By</label>
+                          <input
+                            type="text"
+                            value={importType === "options" ? optionsMap.updatedBy : indicatorMap.updatedBy}
+                            onChange={(e) => importType === "options"
+                              ? setOptionsMap({ ...optionsMap, updatedBy: e.target.value })
+                              : setIndicatorMap({ ...indicatorMap, updatedBy: e.target.value })
+                            }
+                            className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                            placeholder="Enter your username (e.g. admin)"
+                          />
+                        </div>
+                      )}
 
 
-                  </div>
+                    </div>
                   )}
 
                   {/* Indicator Specific Maps */}
@@ -1266,12 +1333,12 @@ export default function Dashboard() {
                             <input type="text" value={signalMap.signal_providerOther} onChange={(e) => setSignalMap({ ...signalMap, signal_providerOther: e.target.value })} className="bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary" placeholder="Enter signal source name" />
                           </div>
                         )}
-                        
+
                         {/* Date Format and Time Format fields removed per spec:
                             The backend auto-detects formats from the shared DATETIME_FORMATS list.
                             Users only need to map the Date column and Time column headers. */}
                       </div>
-                      
+
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                       </div>
 
@@ -1366,7 +1433,7 @@ export default function Dashboard() {
                           </button>
                         )}
                       </div>
-                      
+
                       <div className="flex flex-col gap-1 w-full md:w-1/2 mt-2">
                         <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Updated By</label>
                         <input
@@ -1731,8 +1798,6 @@ export default function Dashboard() {
                           <label className="text-[10px] text-slate-500 font-bold uppercase flex items-center">
                             Position Open on End Date <InfoTooltip text="Action when End Date is reached." />
                           </label>
-                          <input type="date" value={valConfig.positionOpenEndDate} onChange={(e) => setValConfig({ ...valConfig, positionOpenEndDate: e.target.value })}
-                            className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:border-primary/50 [color-scheme:dark] mb-1" />
                           <select value={valConfig.positionOpenEndAction} onChange={(e) => setValConfig({ ...valConfig, positionOpenEndAction: e.target.value })}
                             className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:border-primary/50">
                             <option value="Ignore last Entry">Ignore last Entry</option>
@@ -1929,11 +1994,6 @@ export default function Dashboard() {
                       </tbody>
                     </table>
                   </div>
-                  {report.dataGaps?.length > 0 && (
-                    <div className="mt-4 p-3 bg-secondary/10 border border-secondary/20 rounded-lg text-xs text-secondary">
-                      ⚠ {report.dataGaps.length} data gap(s) detected. Some trades were skipped due to missing spot/options data.
-                    </div>
-                  )}
                 </div>
 
                 {/* Report with Excel Export Table */}
@@ -1967,7 +2027,7 @@ export default function Dashboard() {
                             "Exit Time", "Exit At (Value)", "Sell Amount",
                             "PnL Points", "PnL Amount", "PnL Percentage",
                             "Highest", "High Percentage",
-                            "Lowest",  "Lowest Percentage",
+                            "Lowest", "Lowest Percentage",
                           ].map(col => (
                             <th key={col} className="px-3 py-3 font-black whitespace-nowrap border-r border-black/10 last:border-r-0">
                               {col}
@@ -2017,7 +2077,7 @@ export default function Dashboard() {
                                 </td>
                                 {/* High Percentage = highestHigh / entryPrice */}
                                 <td className="px-3 py-2 text-right font-mono text-green-400">
-                                  {t.highestHighPct != null ? t.highestHighPct.toFixed(4) : "—"}
+                                  {t.highestHighPct != null ? `${t.highestHighPct.toFixed(4)}%` : "—"}
                                 </td>
                                 {/* Lowest (raw low value) */}
                                 <td className="px-3 py-2 text-right font-mono text-slate-200">
@@ -2025,7 +2085,7 @@ export default function Dashboard() {
                                 </td>
                                 {/* Lowest Percentage = lowestLow / entryPrice */}
                                 <td className="px-3 py-2 text-right font-mono text-red-400">
-                                  {t.lowestLowPct != null ? t.lowestLowPct.toFixed(4) : "—"}
+                                  {t.lowestLowPct != null ? `${t.lowestLowPct.toFixed(4)}%` : "—"}
                                 </td>
                               </tr>
                             );

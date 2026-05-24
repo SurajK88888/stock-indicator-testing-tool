@@ -157,6 +157,8 @@ def export_excel(
             val = trade.get(key, "")
             if val is None:
                 val = ""
+            if key in ["pnlPct", "highestHighPct", "lowestLowPct"] and val != "":
+                val = f"{val}%"
             # Format datetime strings for readability
             if isinstance(val, str) and "T" in val:
                 val = val.replace("T", " ")

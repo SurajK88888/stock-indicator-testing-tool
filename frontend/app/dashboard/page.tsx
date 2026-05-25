@@ -80,8 +80,8 @@ export default function Dashboard() {
     // exchange/stock: static dropdown = filter selector. exchangeCol/stockCol = file column mapper.
     // If file column mapped → backend filters rows by selected value (no override).
     // If not mapped → selected value used as fallback constant for all rows.
-    exchange: "NSE", exchangeOther: "", exchangeCol: "",
-    stock: "NIFTY", stockOther: "", stockCol: "",
+    exchange: "", exchangeOther: "", exchangeCol: "",
+    stock: "", stockOther: "", stockCol: "",
     script: "",
     type: "", ceValue: "", peValue: "",
     expiry: "",
@@ -1344,33 +1344,12 @@ export default function Dashboard() {
 
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 pt-4 border-t border-white/5">
                         <div className="flex flex-col gap-1 w-full">
-                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
-                            Exchange <InfoTooltip text="Select the exchange to filter imported rows. Only rows matching this exchange will be stored. If the file has no Exchange column, this value is used for all rows." />
-                          </label>
-                          <select value={signalMap.exchange} onChange={(e) => setSignalMap({ ...signalMap, exchange: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50">
-                            <option value="">All (no filter)</option>
-                            <option value="NSE">NSE</option>
-                            <option value="BSE">BSE</option>
-                            <option value="Other">Other</option>
-                          </select>
-                          {signalMap.exchange === "Other" && <input type="text" value={signalMap.exchangeOther} onChange={(e) => setSignalMap({ ...signalMap, exchangeOther: e.target.value })} className="mt-2 bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white" placeholder="Custom exchange" />}
                           {/* Exchange Column mapping — maps file header to the exchange DB field */}
-                          {renderHeaderDropdown(signalMap.exchangeCol, v => setSignalMap({ ...signalMap, exchangeCol: v }), "Exchange Column", activeHeaders, "Map the Exchange column from your file. Values are stored as-is from the file; the dropdown above acts as a row filter.")}
+                          {renderHeaderDropdown(signalMap.exchangeCol, v => setSignalMap({ ...signalMap, exchangeCol: v }), "Exchange Column", activeHeaders, "Map the Exchange column from your file.")}
                         </div>
                         <div className="flex flex-col gap-1 w-full">
-                          <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">
-                            Stock <InfoTooltip text="Select the stock to filter imported rows. Only rows matching this stock will be stored. If the file has no Stock column, this value is used for all rows." />
-                          </label>
-                          <select value={signalMap.stock} onChange={(e) => setSignalMap({ ...signalMap, stock: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50">
-                            <option value="">All (no filter)</option>
-                            <option value="NIFTY">NIFTY</option>
-                            <option value="BANKNIFTY">BANKNIFTY</option>
-                            <option value="SENSEX">SENSEX</option>
-                            <option value="Other">Other</option>
-                          </select>
-                          {signalMap.stock === "Other" && <input type="text" value={signalMap.stockOther} onChange={(e) => setSignalMap({ ...signalMap, stockOther: e.target.value })} className="mt-2 bg-surface-container-lowest border border-primary/30 rounded px-3 py-2 text-sm text-white" placeholder="Custom stock" />}
                           {/* Stock Column mapping — maps file header to the stock DB field */}
-                          {renderHeaderDropdown(signalMap.stockCol, v => setSignalMap({ ...signalMap, stockCol: v }), "Stock Column", activeHeaders, "Map the Stock column from your file. Values are stored as-is from the file; the dropdown above acts as a row filter.")}
+                          {renderHeaderDropdown(signalMap.stockCol, v => setSignalMap({ ...signalMap, stockCol: v }), "Stock Column", activeHeaders, "Map the Stock column from your file.")}
                         </div>
                         {renderHeaderDropdown(signalMap.script, v => setSignalMap({ ...signalMap, script: v }), "Script Column", activeHeaders, "Strike Price e.g. 24750")}
                         <div className="flex flex-col gap-1 w-full">
@@ -1387,12 +1366,12 @@ export default function Dashboard() {
                           {renderHeaderDropdown(signalMap.signal, v => setSignalMap({ ...signalMap, signal: v }), "Signal Column", activeHeaders, "e.g. Buy/Sell")}
                         </div>
                         <div className="flex flex-col gap-1 w-full">
-                          {renderHeaderDropdown(signalMap.entry_type_col, v => setSignalMap({ ...signalMap, entry_type_col: v }), "Entry Type Column", activeHeaders)}
+                          {renderHeaderDropdown(signalMap.entry_type_col, v => setSignalMap({ ...signalMap, entry_type_col: v }), "Entry Type Column", activeHeaders, "If you map the Entry Type Column but any of the record data in this column are empty then default value is been stored in that record place.")}
                           <select value={signalMap.entry_type_static} onChange={(e) => setSignalMap({ ...signalMap, entry_type_static: e.target.value })} className="mt-2 bg-surface-container-lowest border border-white/10 rounded px-2 py-1 text-[10px] text-white">
                             <option value="Buy At">Default: Buy At</option>
-                            <option value="Above">Default: Above</option>
+                            {/* <option value="Above">Default: Above</option>
                             <option value="Below">Default: Below</option>
-                            <option value="Sell At">Default: Sell At</option>
+                            <option value="Sell At">Default: Sell At</option> */}
                           </select>
                         </div>
                       </div>

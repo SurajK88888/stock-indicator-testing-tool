@@ -151,12 +151,25 @@ def export_excel(
     ws.row_dimensions[2].height = 36
 
     # Write data rows
+    # ROUNDING POLICY (display/export only — never touches calculation values):
+    #   pnlPct, highestHighPct, lowestLowPct  → 2 decimal places
+    #   points (PnL Points)                   → 4 decimal places
     PNL_KEYS = {"points", "profit", "pnlPct"}  # Keys to colour green/red based on sign
+    # Keys that must be rounded to 2dp before display
+    ROUND_2DP = {"pnlPct", "highestHighPct", "lowestLowPct"}
+    # Keys that must be rounded to 4dp before display
+    ROUND_4DP = {"points"}
     for row_idx, trade in enumerate(trades, start=3):
         for col_idx, (_, key) in enumerate(COLUMNS, start=1):
             val = trade.get(key, "")
             if val is None:
                 val = ""
+            # Round AFTER fetching from trade dict — calculation already done
+            if val != "" and isinstance(val, (int, float)):
+                if key in ROUND_2DP:
+                    val = round(val, 2)
+                elif key in ROUND_4DP:
+                    val = round(val, 4)
             if key in ["pnlPct", "highestHighPct", "lowestLowPct"] and val != "":
                 val = f"{val}%"
             # Format datetime strings for readability
@@ -168,7 +181,8 @@ def export_excel(
             # Colour PnL columns green/red based on sign
             if key in PNL_KEYS and val != "":
                 try:
-                    cell.font = Font(color="006100" if float(val) >= 0 else "9C0006")
+                    numeric_val = float(str(val).replace("%", ""))
+                    cell.font = Font(color="006100" if numeric_val >= 0 else "9C0006")
                 except (ValueError, TypeError):
                     pass
 

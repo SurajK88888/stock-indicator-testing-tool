@@ -2278,7 +2278,7 @@ export default function Dashboard() {
                             <td className={`px-3 py-2 font-mono font-bold ${t.profit >= 0 ? 'text-primary' : 'text-[#ffb4ab]'}`}>
                               {t.profit >= 0 ? '+' : ''}{t.profit?.toFixed(2)}
                             </td>
-                            <td className="px-3 py-2">{t.pnlPct}%</td>
+                            <td className="px-3 py-2">{typeof t.pnlPct === 'number' ? t.pnlPct.toFixed(2) : t.pnlPct}%</td>
                             <td className="px-3 py-2">
                               <button onClick={() => handleVerify(t)} className="text-[10px] uppercase tracking-wider font-bold bg-white/5 hover:bg-white/10 px-2 py-1 rounded text-white transition-colors">
                                 Verify

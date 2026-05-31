@@ -161,3 +161,26 @@ class SignalData(SQLModel, table=True):
     updatedBy: Optional[str] = None
     updated_on: datetime = Field(default_factory=datetime.utcnow)
 
+
+# ---------------------------------------------------------------------------
+# Signal Validation Report — Persisted result of each signal backtesting run.
+# Completely isolated from ValidationReport (indicator validator).
+# summary_trades: JSON list of Summary Report rows (Report 1 per docx).
+# validation_trades: JSON list of Signal Validation Report rows (Report 2).
+# REUSABLE: Same JSON-blob + summary-columns pattern as ValidationReport.
+# ---------------------------------------------------------------------------
+class SignalValidationReport(SQLModel, table=True):
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        primary_key=True
+    )
+    testDate: datetime = Field(default_factory=datetime.utcnow)
+    config: str                              # JSON string of the signal validator config used
+    signal_provider: Optional[str] = None   # e.g. "MyProvider"
+    stock: Optional[str] = None             # e.g. "NIFTY", "ALL"
+    lot_split_rule: Optional[str] = None    # "Split Rule" or "Single Trade"
+    total_trades: Optional[int] = None
+    total_pnl: Optional[float] = None       # Sum of Net P&L across all trades
+    win_rate: Optional[float] = None        # % of profitable trades
+    summary_trades: str = Field(default="[]")       # JSON list — Report 1 rows
+    validation_trades: str = Field(default="[]")    # JSON list — Report 2 rows

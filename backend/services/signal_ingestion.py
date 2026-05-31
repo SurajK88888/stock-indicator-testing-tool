@@ -344,3 +344,16 @@ def get_signal_providers(session: Session = Depends(get_session)):
     results = session.exec(statement).all()
     unique_names = sorted([name for name in results if name])
     return {"providers": unique_names}
+
+
+@router.get("/stocks")
+def get_signal_stocks(session: Session = Depends(get_session)):
+    """
+    Returns distinct stock values from SignalData table.
+    Used to populate the Stock dropdown in the Signal Validator form.
+    REUSABLE: Same pattern as get_signal_providers.
+    """
+    statement = select(SignalData.stock).distinct()
+    results = session.exec(statement).all()
+    unique_stocks = sorted([s for s in results if s])
+    return {"stocks": unique_stocks}

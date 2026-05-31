@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
@@ -183,6 +183,33 @@ export default function Dashboard() {
   // ATM Multiples: 50 to 2000 in multiples of 50 (per requirement spec)
   const atmMultiples = Array.from({ length: 40 }, (_, i) => String((i + 1) * 50));
 
+  // ── Signal Validator State (ISOLATED — no shared state with Indicator Validator) ──
+  // REUSABLE: This pattern of svConfig mirrors valConfig but is completely independent.
+  const [svConfig, setSvConfig] = useState({
+    signal_provider: "",
+    stock: "",                              // "" = All
+    start_date: "",
+    end_date: "",
+    entry_time: "At Signal",               // "At Signal" | "Next Candle"
+    on_jump: "Drop Signal",                // "Drop Signal" | "Trade"
+    entry_value_if_jump: "Close",          // enabled only when on_jump === "Trade"
+    trade_on: "Calls",                    // "Calls" | "Puts" | "Both"
+    trade_amount: "1",                     // Lots only (no Capital mode)
+    lot_split_rule: "Single Trade",       // "Split Rule" | "Single Trade"
+    closing_on_trade_type: "Close at EOD Values",
+    position_open_on_end_date: "Ignore last Entry",
+  });
+  const [svStockOptions, setSvStockOptions] = useState<string[]>([]);  // from /api/signals/stocks
+  const [svStatus, setSvStatus] = useState("");                         // polling status message
+  const [svReport, setSvReport] = useState<any>(null);                  // active signal report data
+  // Signal reports history (for dropdown in Results tab)
+  const [svReportsList, setSvReportsList] = useState<any[]>([]);
+  // Which signal report is selected in Results tab
+  const [svActiveReportId, setSvActiveReportId] = useState("");
+  // Which report type to display: "summary" | "validation"
+  const [svActiveReportType, setSvActiveReportType] = useState<"summary" | "validation">("summary");
+
+
   // ── Sorted trades (client-side) ──────────────────────────────────────────
   const sortedTrades = (() => {
     if (!report?.trades?.length) return [];
@@ -250,7 +277,10 @@ export default function Dashboard() {
 
   // ── Load historical report ────────────────────────────────────────────────
   const handleLoadReport = async (id: string) => {
-    if (!id) return;
+    if (!id) {
+      setReport(null);
+      return;
+    }
     try {
       const res = await fetch(`http://127.0.0.1:8000/api/results/${id}`);
       const data = await res.json();
@@ -612,7 +642,71 @@ export default function Dashboard() {
     } catch { setValidatorStatus("Failed to contact backend. Ensure uvicorn is running."); }
   };
 
+  // ---------------------------------------------------------------------------
+  // Signal Validator: POST to /api/signal-validate, then poll for result.
+  // ISOLATED from handleValidateSubmit — no shared state, no shared API calls.
+  // REUSABLE: Same job-polling pattern as handleValidateSubmit.
+  // ---------------------------------------------------------------------------
+  const handleSignalValidateSubmit = async () => {
+    if (!svConfig.signal_provider) {
+      setSvStatus("Please select a Signal Provider.");
+      return;
+    }
+    const lotCount = parseInt(svConfig.trade_amount) || 1;
+    if (svConfig.lot_split_rule === "Split Rule" && lotCount % 2 !== 0) {
+      setSvStatus("Split Rule requires an even number of lots.");
+      return;
+    }
+    setSvStatus("Submitting signal validation job...");
+    setSvReport(null);
+    const payload = {
+      signal_provider: svConfig.signal_provider,
+      stock: svConfig.stock || "ALL",
+      start_date: svConfig.start_date || null,
+      end_date: svConfig.end_date || null,
+      entry_time: svConfig.entry_time,
+      on_jump: svConfig.on_jump,
+      entry_value_if_jump: svConfig.entry_value_if_jump,
+      trade_on: svConfig.trade_on,
+      trade_amount: lotCount,
+      lot_split_rule: svConfig.lot_split_rule,
+      closing_on_trade_type: svConfig.closing_on_trade_type,
+      position_open_on_end_date: svConfig.position_open_on_end_date,
+    };
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/signal-validate", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.error) { setSvStatus("Error: " + data.error); return; }
+      setSvStatus("Job running… polling for results.");
+      // Poll every 2s — mirrors Indicator Validator polling pattern
+      const poll = setInterval(async () => {
+        try {
+          const s = await fetch(`http://127.0.0.1:8000/api/signal-validate/status/${data.jobId}`);
+          const sd = await s.json();
+          if (sd.status === "done") {
+            clearInterval(poll);
+            setSvReport(sd.result);
+            // Refresh reports list
+            fetch("http://127.0.0.1:8000/api/signal-validate/reports")
+              .then(r => r.json())
+              .then(d => { if (Array.isArray(d)) setSvReportsList(d); })
+              .catch(() => { });
+            setActiveTab("results");
+            setSvStatus("");
+          } else if (sd.status === "error") {
+            clearInterval(poll);
+            setSvStatus("Error: " + JSON.stringify(sd.result?.error));
+          }
+        } catch { clearInterval(poll); }
+      }, 2000);
+    } catch { setSvStatus("Failed to contact backend. Ensure uvicorn is running."); }
+  };
+
+
   // Fetch dynamic indicator list on mount and when tabs change
+  // Also fetches signal stocks and signal reports list when relevant tabs are active
   useEffect(() => {
     fetch("http://127.0.0.1:8000/api/indicators")
       .then(r => r.json())
@@ -632,10 +726,29 @@ export default function Dashboard() {
       .then(d => {
         if (Array.isArray(d.providers)) {
           setSignalProviderOptions(d.providers);
+          // Auto-select first provider in signal validator if none selected
+          if (activeTab === "signal_validator" && d.providers.length > 0 && !svConfig.signal_provider) {
+            setSvConfig(v => ({ ...v, signal_provider: d.providers[0] }));
+          }
         }
       })
       .catch(() => { });
+
+    // Fetch signal stocks when Signal Validator or Results tabs are active
+    if (activeTab === "signal_validator" || activeTab === "results") {
+      fetch("http://127.0.0.1:8000/api/signals/stocks")
+        .then(r => r.json())
+        .then(d => { if (Array.isArray(d.stocks)) setSvStockOptions(d.stocks); })
+        .catch(() => { });
+
+      // Fetch signal reports list for Results tab dropdown
+      fetch("http://127.0.0.1:8000/api/signal-validate/reports")
+        .then(r => r.json())
+        .then(d => { if (Array.isArray(d)) setSvReportsList(d); })
+        .catch(() => { });
+    }
   }, [activeTab]);
+
 
   // ---------------------------------------------------------------------------
   // Clear Table Data: fetch ingestion timestamps for the selected table
@@ -945,9 +1058,14 @@ export default function Dashboard() {
           <button onClick={() => setActiveTab("validator")} className={`px-4 py-2 text-sm font-semibold rounded transition-all ${activeTab === 'validator' ? 'bg-primary/10 text-primary border border-primary/20 shadow-[0_0_15px_rgba(78,222,163,0.15)]' : 'text-slate-400 hover:text-white'}`}>
             <Settings size={16} className="inline mr-2" /> Indicator Validator
           </button>
+          {/* Signal Validator — isolated from Indicator Validator */}
+          <button onClick={() => setActiveTab("signal_validator")} className={`px-4 py-2 text-sm font-semibold rounded transition-all ${activeTab === 'signal_validator' ? 'bg-primary/10 text-primary border border-primary/20 hadow-[0_0_15px_rgba(78,222,163,0.15)]' : 'text-slate-400 hover:text-white'}`}>
+            <Play size={16} className="inline mr-2" /> Signal Validator
+          </button>
           <button onClick={() => setActiveTab("results")} className={`px-4 py-2 text-sm font-semibold rounded transition-all ${activeTab === 'results' ? 'bg-primary/10 text-primary border border-primary/20 shadow-[0_0_15px_rgba(78,222,163,0.15)]' : 'text-slate-400 hover:text-white'}`}>
             <BarChart2 size={16} className="inline mr-2" /> Results
           </button>
+
 
           {/* Separator */}
           <div className="w-px h-6 bg-white/10" />
@@ -1532,8 +1650,148 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* TAB: Signal Validator — ISOLATED from Indicator Validator */}
+        {activeTab === "signal_validator" && (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <h2 className="text-3xl font-headline font-black mb-6 flex items-center gap-3">
+              <Play className="text-primary" size={28} /> Signal Validator
+            </h2>
+            <div className="glass-card border border-primary/10 p-8 rounded-xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-50" />
+              <div className="mb-6 p-4 bg-primary/5 border border-primary/20 rounded-lg text-sm text-slate-300">
+                <h4 className="font-bold text-primary mb-2 flex items-center gap-2"><Info size={16} /> Signal Validator</h4>
+                <ul className="list-disc list-inside space-y-1 text-xs text-slate-400">
+                  <li>Validates signal provider data against Options OHLC using SL/Target logic.</li>
+                  <li>Split Rule: lots split into 2 — Lot-1 exits at T1, Lot-2 trails to highest target.</li>
+                  <li>Global Rule: all open positions force-closed on Expiry Date at closing price.</li>
+                  <li>Generates Summary Report (target values) + Signal Validation Report (hit times).</li>
+                </ul>
+              </div>
+              <div className="space-y-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Signal Provider <span className="text-red-400 ml-1">*</span><InfoTooltip text="Select the signal provider to validate." /></label>
+                    <select id="sv-signal-provider" value={svConfig.signal_provider} onChange={e => setSvConfig({ ...svConfig, signal_provider: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                      <option value="">Select Provider</option>
+                      {signalProviderOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    {signalProviderOptions.length === 0 && <p className="text-[10px] text-amber-400 mt-1">Import signal data first.</p>}
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Stock <InfoTooltip text="Leave empty to validate all stocks." /></label>
+                    <select id="sv-stock" value={svConfig.stock} onChange={e => setSvConfig({ ...svConfig, stock: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                      <option value="">All Stocks</option>
+                      {svStockOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Start Date</label>
+                    <input id="sv-start-date" type="date" value={svConfig.start_date} onChange={e => setSvConfig({ ...svConfig, start_date: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50 [color-scheme:dark]" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">End Date</label>
+                    <input id="sv-end-date" type="date" value={svConfig.end_date} onChange={e => setSvConfig({ ...svConfig, end_date: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary50 [color-scheme:dark]" />
+                  </div>
+                </div>
+                <div className="border-t border-white/5 pt-8">
+                  <h4 className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" /> Entry Rules</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-white/[0.02] p-4 rounded-lg border border-white/5">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Entry Time <InfoTooltip text="At Signal: use signal candle. Next Candle: use candle after signal. Same rules apply." /></label>
+                      <select id="sv-entry-time" value={svConfig.entry_time} onChange={e => setSvConfig({ ...svConfig, entry_time: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="At Signal">At Signal</option>
+                        <option value="Next Candle">Next Candle</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">On Jump <InfoTooltip text="If candle Low is above entry price (gap up), Drop signal or Trade at selected price." /></label>
+                      <select id="sv-on-jump" value={svConfig.on_jump} onChange={e => setSvConfig({ ...svConfig, on_jump: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="Drop Signal">Drop Signal</option>
+                        <option value="Trade">Trade</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className={`text-xs font-bold uppercase tracking-wider flex items-center ${svConfig.on_jump === "Trade" ? "text-primary" : "text-slate-600"}`}>Entry Value if Jump <InfoTooltip text="Price point when jump. Active only when On Jump = Trade." /></label>
+                      <select id="sv-entry-value-if-jump" value={svConfig.entry_value_if_jump} disabled={svConfig.on_jump !== "Trade"} onChange={e => setSvConfig({ ...svConfig, entry_value_if_jump: e.target.value })} className={`border rounded px-3 py-3 text-sm focus:outline-none transition-all ${svConfig.on_jump === "Trade" ? "bg-surface-container-low border-primary/30 text-white focus:border-primary" : "bg-surface-container-lowest border-white/5 text-slate-600 cursor-not-allowed"}`}>
+                        <option value="Open">Open</option>
+                        <option value="High">High</option>
+                        <option value="Low">Low</option>
+                        <option value="Close">Close</option>
+                        <option value="Open-Close Average">Open-Close Average</option>
+                        <option value="High-Low Average">High-Low Average</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div className="border-t border-white/5 pt-8">
+                  <h4 className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-primary" /> Trade Configuration</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Trade On <InfoTooltip text="Calls, Puts or Both." /></label>
+                      <select id="sv-trade-on" value={svConfig.trade_on} onChange={e => setSvConfig({ ...svConfig, trade_on: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="Calls">Calls</option>
+                        <option value="Puts">Puts</option>
+                        <option value="Both">Both</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Trade Amount (Lots) <InfoTooltip text="Number of lots. Must be even for Split Rule." /></label>
+                      <input id="sv-trade-amount" type="number" min={1} value={svConfig.trade_amount} onChange={e => setSvConfig({ ...svConfig, trade_amount: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50" />
+                      {svConfig.lot_split_rule === "Split Rule" && parseInt(svConfig.trade_amount) % 2 !== 0 && <p className="text-[10px] text-amber-400 mt-1">Split Rule requires even lots.</p>}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Lot Split Rule <InfoTooltip text="Split Rule: Lot-1 exits T1, Lot-2 trails SL to highest target. Single Trade: all lots together." /></label>
+                      <select id="sv-lot-split-rule" value={svConfig.lot_split_rule} onChange={e => setSvConfig({ ...svConfig, lot_split_rule: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="Single Trade">Single Trade</option>
+                        <option value="Split Rule">Split Rule</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Closing Open Positions <InfoTooltip text="Intraday: close at last candle same day. BTST: close at last candle next day." /></label>
+                      <select id="sv-closing-on-trade-type" value={svConfig.closing_on_trade_type} onChange={e => setSvConfig({ ...svConfig, closing_on_trade_type: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="Ignore last Entry">Ignore last Entry</option>
+                        <option value="Take next day beyond End Date">Take next day beyond End Date</option>
+                        <option value="Close at EOD Values">Close at EOD Values</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div className="border-t border-white/5 pt-8">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Position Open on End Date <InfoTooltip text="Action when position still open on End Date." /></label>
+                      <select id="sv-position-open-on-end-date" value={svConfig.position_open_on_end_date} onChange={e => setSvConfig({ ...svConfig, position_open_on_end_date: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
+                        <option value="Ignore last Entry">Ignore last Entry</option>
+                        <option value="Take next Entry beyond End Date">Take next Entry beyond End Date</option>
+                        <option value="Close at EOD Values">Close at EOD Values</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-12 pt-8 border-t border-white/10 flex justify-center">
+                <button
+                  id="sv-validate-btn"
+                  onClick={handleSignalValidateSubmit}
+                  disabled={svConfig.lot_split_rule === "Split Rule" && parseInt(svConfig.trade_amount) % 2 !== 0}
+                  className={`bg-primary text-black px-16 py-4 rounded-lg font-black uppercase tracking-widest text-sm flex items-center gap-3 transition-all ${svConfig.lot_split_rule === "Split Rule" && parseInt(svConfig.trade_amount) % 2 !== 0
+                    ? "opacity-50 cursor-not-allowed grayscale"
+                    : "hover:brightness-110 shadow-[0_0_30px_rgba(78,222,163,0.3)] hover:scale-105 active:scale-95"
+                    }`}
+                >
+                  <Play size={20} fill="currentColor" /> Validate Signals
+                </button>
+              </div>
+              {svStatus && (
+                <div className="mt-8 p-4 bg-primary/10 border border-primary/20 text-primary rounded-md text-sm text-center font-bold animate-in zoom-in-95">{svStatus}</div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* TAB: Validator Form */}
         {activeTab === "validator" && (
+
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h2 className="text-3xl font-headline font-black mb-6 flex items-center gap-3">
               <Settings className="text-primary" size={28} /> Indicator Validator
@@ -1813,24 +2071,58 @@ export default function Dashboard() {
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
 
             {/* Header row */}
-            <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <h2 className="text-3xl font-headline font-black flex items-center gap-3">
                 <BarChart2 className="text-primary" size={28} /> Performance Ledger
               </h2>
-              {/* History selector */}
-              {reportsList.length > 0 && (
-                <select
-                  onChange={e => handleLoadReport(e.target.value)}
-                  className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50 min-w-[260px]"
-                >
-                  <option value="">📂 Load a past report…</option>
-                  {reportsList.map((r: any) => (
-                    <option key={r.id} value={r.id}>
-                      {r.stock} | {r.indicatorName} ({r.timeframe}) | {r.testDate.slice(0, 10)} | {r.totalTrades} trades
-                    </option>
-                  ))}
-                </select>
-              )}
+
+              <div className="flex flex-col gap-2 items-end">
+                {/* History selector */}
+                {reportsList.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-primary font-bold uppercase tracking-wider whitespace-nowrap">Indicator Reports:</span>
+                    <select
+                      onChange={e => handleLoadReport(e.target.value)}
+                      className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50 min-w-[260px]"
+                    >
+                      <option value="">📂 Load a past report…</option>
+                      {reportsList.map((r: any) => (
+                        <option key={r.id} value={r.id}>
+                          {r.stock} | {r.indicatorName} ({r.timeframe}) | {r.testDate.slice(0, 10)} | {r.totalTrades} trades
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {/* Signal Validator Report Dropdown — isolated from Indicator Validator */}
+                {svReportsList.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-primary font-bold uppercase tracking-wider whitespace-nowrap">Signal Reports:</span>
+                    <select
+                      id="sv-report-selector"
+                      value={svActiveReportId}
+                      onChange={async e => {
+                        const id = e.target.value;
+                        setSvActiveReportId(id);
+                        if (!id) { setSvReport(null); return; }
+                        try {
+                          const res = await fetch(`http://127.0.0.1:8000/api/signal-validate/reports/${id}`);
+                          const data = await res.json();
+                          setSvReport(data);
+                        } catch { setSvReport(null); }
+                      }}
+                      className="bg-surface-container-low border border-signal/20 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-signal/50 min-w-[280px]"
+                    >
+                      <option value="">📊 Load a Signal Report…</option>
+                      {svReportsList.map((r: any) => (
+                        <option key={r.id} value={r.id}>
+                          {r.signal_provider} | {r.stock || "All"} | {r.lot_split_rule} | {(r.testDate || "").slice(0, 10)} | {r.total_trades} trades
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
             </div>
 
             {report ? (
@@ -1858,7 +2150,7 @@ export default function Dashboard() {
                     { label: "Net P&L", value: `${report.totalProfit >= 0 ? "+" : ""}${report.totalProfit} pts`, color: report.totalProfit >= 0 ? "text-primary" : "text-error" },
                     { label: "Win Rate", value: `${report.winRate}%`, color: "text-white" },
                     { label: "Total Trades", value: report.totalTrades, color: "text-white" },
-                    { label: "Max Drawdown", value: `${report.maxDrawdown ?? 0}%`, color: "text-secondary" },
+                    { label: "Max Drawdown", value: `${report.maxDrawdown ?? 0}%`, color: "text-signal" },
                     { label: "Profit Factor", value: `${report.profitFactor ?? 0}x`, color: report.profitFactor >= 1 ? "text-primary" : "text-error" },
                     { label: "Avg Trade", value: `${report.avgTrade ?? 0} pts`, color: report.avgTrade >= 0 ? "text-primary" : "text-error" },
                   ].map((kpi: any) => (
@@ -1950,7 +2242,7 @@ export default function Dashboard() {
                             <td className="px-3 py-2 font-mono text-[10px] text-primary">{t.script}</td>
                             <td className="px-3 py-2 text-slate-400 text-[10px]">{t.atmProof}</td>
                             <td className="px-3 py-2 text-[10px]">{t.entryTime?.slice(0, 16).replace("T", " ")}</td>
-                            <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${t.entryType === "Buy" ? "bg-primary/20 text-primary" : "bg-secondary/20 text-secondary"}`}>{t.entryType}</span></td>
+                            <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${t.entryType === "Buy" ? "bg-primary/20 text-primary" : "bg-signal/20 text-signal"}`}>{t.entryType}</span></td>
                             <td className="px-3 py-2 font-mono">{t.entryPrice?.toFixed(2)}</td>
                             <td className="px-3 py-2 text-[10px]">{t.exitTime?.slice(0, 16).replace("T", " ")}</td>
                             <td className="px-3 py-2 font-mono">{t.exitPrice?.toFixed(2)}</td>
@@ -2086,8 +2378,171 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* ================================================================
+                SIGNAL VALIDATOR REPORT SECTION — isolated from Indicator Report
+                Shows Summary Report (Report 1) and Validation Report (Report 2)
+                ================================================================ */}
+            {svReport && (
+              <div className="space-y-6 mt-8 border-t border-signal/20 pt-8">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <h3 className="text-2xl font-headline font-black flex items-center gap-3">
+                    <Play className="text-primary" size={22} /> Signal Validator Report
+                    <span className="text-sm font-normal text-slate-400 ml-2">{svReport.signal_provider} | {svReport.stock || "All Stocks"} | {svReport.lot_split_rule}</span>
+                  </h3>
+                  {/* KPI row */}
+                  <div className="flex gap-4 flex-wrap">
+                    {[
+                      { label: "Total Trades", value: svReport.total_trades },
+                      { label: "Net P&L", value: `${(svReport.total_pnl || 0) >= 0 ? "+" : ""}${(svReport.total_pnl || 0).toFixed(2)}`, color: (svReport.total_pnl || 0) >= 0 ? "text-primary" : "text-red-400" },
+                      { label: "Win Rate", value: `${svReport.win_rate || 0}%`, color: "text-white" },
+                    ].map((kpi: any) => (
+                      <div key={kpi.label} className="glass-card border border-white/5 px-4 py-3 rounded-lg text-center">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">{kpi.label}</div>
+                        <div className={`text-lg font-black ${kpi.color || "text-white"}`}>{kpi.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Report Type Toggle */}
+                <div className="flex gap-2 items-center">
+                  <button
+                    id="sv-tab-summary"
+                    onClick={() => setSvActiveReportType("summary")}
+                    className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${svActiveReportType === "summary" ? "bg-primary text-black" : "bg-white/5 text-slate-400 hover:text-white border border-white/10"}`}
+                  >
+                    Trade Log
+                  </button>
+                  <button
+                    id="sv-tab-validation"
+                    onClick={() => setSvActiveReportType("validation")}
+                    className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${svActiveReportType === "validation" ? "bg-primary text-black" : "bg-white/5 text-slate-400 hover:text-white border border-white/10"}`}
+                  >
+                    Signal Validation Report
+                  </button>
+                  {/* Excel Export for signal reports */}
+                  <button
+                    id="sv-export-excel"
+                    onClick={() => {
+                      if (!svReport?.id) return;
+                      const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${svReport.id}&reportType=${svActiveReportType}`;
+                      const a = document.createElement("a");
+                      a.href = url; a.click();
+                    }}
+                    className="ml-auto flex items-center gap-2 bg-green-900/40 border border-green-500/40 hover:border-green-400 text-green-400 hover:text-green-300 px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                  >
+                    <FileText size={13} /> Download Excel (.xlsx)
+                  </button>
+                </div>
+
+                {/* Summary Report Table (Report 1 — shows target VALUES) */}
+                {svActiveReportType === "summary" && (
+                  <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-50" />
+                    <p className="text-[10px] text-slate-500 mb-3">T1–T10 columns show <strong className="text-primary">target values</strong>. SL column shows the signal SL value.</p>
+                    <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded-lg border border-white/10">
+                      <table className="w-full text-left text-xs text-slate-300 min-w-[1400px]">
+                        <thead className="text-[10px] uppercase bg-surface-container-low text-slate-400 sticky top-0 z-10">
+                          <tr>
+                            {["#", "Script", "Entry Type", "Option Type", "Qty", "Entry Time", "Entry Price", "Trade Value", "SL", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "L1 Exit Time", "L1 Exit Price", "L2 Exit Time", "L2 Exit Price", "Exit Price", "Net P&L", "P&L %"].map(col => (
+                              <th key={col} className="px-3 py-3 font-bold whitespace-nowrap border-r border-primary/10 last:border-r-0">{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(svReport.summary_trades || []).length === 0 ? (
+                            <tr><td colSpan={26} className="px-4 py-8 text-center text-slate-500">No trades in this report.</td></tr>
+                          ) : (
+                            (svReport.summary_trades || []).map((t: any, i: number) => {
+                              const pnlPos = (t.net_pnl || 0) >= 0;
+                              return (
+                                <tr key={i} className="border-t border-white/5 hover:bg-white/[0.03] transition-colors">
+                                  <td className="px-3 py-2 text-slate-500">{t.serial}</td>
+                                  <td className="px-3 py-2 font-mono text-white font-bold text-[10px]">{t.script}</td>
+                                  <td className="px-3 py-2 text-slate-400 text-[10px]">{t.entry_type}</td>
+                                  <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${(t.option_type || "").toLowerCase().includes("put") ? "bg-red-900/40 text-red-400" : "bg-green-900/40 text-green-400"}`}>{t.option_type || "—"}</span></td>
+                                  <td className="px-3 py-2 text-right">{t.qty}</td>
+                                  <td className="px-3 py-2 text-[10px]">{(t.entry_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.entry_price?.toFixed ? t.entry_price.toFixed(2) : t.entry_price}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.trade_value?.toFixed ? t.trade_value.toFixed(2) : t.trade_value}</td>
+                                  <td className="px-3 py-2 text-right font-mono text-red-400">{t.sl}</td>
+                                  {["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"].map(tx => (
+                                    <td key={tx} className="px-3 py-2 text-right font-mono text-slate-400">{t[tx] === "-" ? "—" : t[tx]}</td>
+                                  ))}
+                                  <td className="px-3 py-2 text-[10px]">{(t.l1_exit_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.l1_exit_price?.toFixed ? t.l1_exit_price.toFixed(2) : t.l1_exit_price}</td>
+                                  <td className="px-3 py-2 text-[10px]">{(t.l2_exit_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.l2_exit_price?.toFixed ? t.l2_exit_price.toFixed(2) : t.l2_exit_price}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.exit_price?.toFixed ? t.exit_price.toFixed(2) : t.exit_price}</td>
+                                  <td className={`px-3 py-2 text-right font-mono font-bold ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.net_pnl?.toFixed ? t.net_pnl.toFixed(2) : t.net_pnl}</td>
+                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(4) : t.pnl_pct}%</td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Signal Validation Report Table (Report 2 — shows target HIT TIMES) */}
+                {svActiveReportType === "validation" && (
+                  <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-signal/50 to-transparent opacity-50" />
+                    <p className="text-[10px] text-slate-500 mb-3">T1–T10 columns show <strong className="text-primary">hit times</strong> (HH:MM). SL column shows <strong className="text-primary">time SL was hit</strong>. "−" means not hit.</p>
+                    <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded-lg border border-white/10">
+                      <table className="w-full text-left text-xs text-slate-300 min-w-[1600px]">
+                        <thead className="text-[10px] uppercase bg-yellow-400/90 text-black sticky top-0 z-10">
+                          <tr>
+                            {["#", "Script", "Option Type", "Expiry", "Qty", "Entry Time", "Entry Price", "Trade Value at Entry", "SL (Time Hit)", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "L1 Exit Time", "L1 Exit Price", "L2 Exit Time", "L2 Exit Price", "Trade Value at Exit", "Trade Summary", "Trade P&L", "P&L %"].map(col => (
+                              <th key={col} className="px-3 py-3 font-bold whitespace-nowrap border-r border-signal/10 last:border-r-0">{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(svReport.validation_trades || []).length === 0 ? (
+                            <tr><td colSpan={27} className="px-4 py-8 text-center text-slate-500">No trades in this report.</td></tr>
+                          ) : (
+                            (svReport.validation_trades || []).map((t: any, i: number) => {
+                              const pnlPos = (t.trade_pnl || 0) >= 0;
+                              return (
+                                <tr key={i} className="border-t border-white/5 hover:bg-white/[0.03] transition-colors">
+                                  <td className="px-3 py-2 text-slate-500">{t.serial}</td>
+                                  <td className="px-3 py-2 font-mono text-white font-bold text-[10px]">{t.script}</td>
+                                  <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${(t.option_type || "").toLowerCase().includes("put") ? "bg-red-900/40 text-red-400" : "bg-green-900/40 text-green-400"}`}>{t.option_type || "—"}</span></td>
+                                  <td className="px-3 py-2 text-slate-400 text-[10px]">{t.expiry || "—"}</td>
+                                  <td className="px-3 py-2 text-right">{t.qty}</td>
+                                  <td className="px-3 py-2 text-[10px]">{(t.entry_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.entry_price?.toFixed ? t.entry_price.toFixed(2) : t.entry_price}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.trade_amount_at_entry?.toFixed ? t.trade_amount_at_entry.toFixed(2) : t.trade_amount_at_entry}</td>
+                                  <td className="px-3 py-2 text-center text-red-400 font-mono text-[10px]">{t.sl === "-" ? "—" : t.sl}</td>
+                                  {["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"].map(tx => (
+                                    <td key={tx} className="px-3 py-2 text-center font-mono text-[10px] text-slate-400">{t[tx] === "-" ? "—" : t[tx]}</td>
+                                  ))}
+                                  <td className="px-3 py-2 text-[10px]">{(t.l1_exit_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.l1_exit_price?.toFixed ? t.l1_exit_price.toFixed(2) : t.l1_exit_price}</td>
+                                  <td className="px-3 py-2 text-[10px]">{(t.l2_exit_time || "").replace("T", " ")}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.l2_exit_price?.toFixed ? t.l2_exit_price.toFixed(2) : t.l2_exit_price}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{t.trade_amount_at_exit?.toFixed ? t.trade_amount_at_exit.toFixed(2) : t.trade_amount_at_exit}</td>
+                                  <td className="px-3 py-2 text-slate-300 text-[10px] max-w-[180px]">{t.trade_summary}</td>
+                                  <td className={`px-3 py-2 text-right font-mono font-bold ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.trade_pnl?.toFixed ? t.trade_pnl.toFixed(2) : t.trade_pnl}</td>
+                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(4) : t.pnl_pct}%</td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Phase 3 — Trade Verify Modal */}
             {verifyTrade && (
+
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setVerifyTrade(null)}>
                 <div className="bg-surface-container border border-white/10 rounded-2xl p-6 w-full max-w-3xl mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
                   <div className="flex items-center justify-between mb-4">

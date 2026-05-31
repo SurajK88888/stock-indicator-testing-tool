@@ -74,7 +74,7 @@ def read_root():
 
 
 # Import routers AFTER app is defined to prevent circular import issues
-from services import ingestion, validator, results, admin, debug, signal_ingestion  # noqa: E402
+from services import ingestion, validator, results, admin, debug, signal_ingestion, signal_validator  # noqa: E402
 
 app.include_router(ingestion.router)
 app.include_router(validator.router)
@@ -82,3 +82,4 @@ app.include_router(results.router)
 app.include_router(admin.router)
 app.include_router(debug.router)
 app.include_router(signal_ingestion.router)
+app.include_router(signal_validator.router)  # Signal Validator — isolated from indicator validator

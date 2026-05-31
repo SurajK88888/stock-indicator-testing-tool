@@ -9,6 +9,10 @@
   --color-on-secondary: #67001b;
   --color-secondary-container: #b50036;
   --color-on-secondary-container: #ffc2c4;
+  /* Signal Validator accent — distinct from primary (green) and secondary (pink) */
+  --color-signal: #b47fff;
+  --color-on-signal: #1a0038;
+  --color-signal-container: #2d1060;
   --color-tertiary: #adc6ff;
   --color-on-tertiary: #002e6a;
   --color-tertiary-container: #00163a;

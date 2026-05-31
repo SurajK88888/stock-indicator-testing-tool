@@ -16,7 +16,7 @@ adding columns to a live database.
 
 import sqlite3
 from sqlmodel import SQLModel, create_engine, Session
-from models import OptionsData, IndicatorData, ValidationReport, BacktestTrade
+from models import OptionsData, IndicatorData, ValidationReport, BacktestTrade, SignalValidationReport
 
 # Exported so background task workers can create their own DB sessions
 sqlite_file_name = "database.db"
@@ -79,7 +79,17 @@ def _run_migrations():
             if col_name not in existing_opt:
                 cursor.execute(f"ALTER TABLE optionsdata ADD COLUMN {col_name} {col_type} DEFAULT {default}")
 
-                
+        # 4. SignalValidationReport migrations (new columns added over time)
+        # create_all() creates the table on first run; ALTER TABLE handles future columns.
+        cursor.execute("PRAGMA table_info(signalvalidationreport)")
+        existing_svr = {row[1].lower() for row in cursor.fetchall()}
+        svr_migrations = [
+            # Add future columns here as the schema evolves — zero data loss pattern
+        ]  # type: list
+        for col_name, col_type, default in svr_migrations:
+            if col_name not in existing_svr:
+                cursor.execute(f"ALTER TABLE signalvalidationreport ADD COLUMN {col_name} {col_type} DEFAULT {default}")
+
         conn.commit()
 
 

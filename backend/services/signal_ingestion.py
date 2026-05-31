@@ -317,10 +317,15 @@ async def ingest_signals(
         except Exception as e:
             continue
 
+    # Bulk insert using chunked add_all() — SQLModel/SQLAlchemy 2.x compatible.
+    # REUSABLE: Chunk size of 50,000 keeps each transaction short, reducing the time
+    # the write lock is held and preventing "database is locked" errors under concurrency.
+    CHUNK_SIZE = 50_000
     if instances:
         try:
-            session.add_all(instances)
-            session.commit()
+            for i in range(0, len(instances), CHUNK_SIZE):
+                session.add_all(instances[i : i + CHUNK_SIZE])
+                session.commit()
         except Exception as e:
             session.rollback()
             return {"error": f"Database insert failed: {str(e)}"}

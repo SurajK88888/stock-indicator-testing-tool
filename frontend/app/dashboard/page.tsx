@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
@@ -140,6 +140,7 @@ export default function Dashboard() {
 
   const [clearDb, setClearDb] = useState<{
     open: boolean;
+    tablesLoading: boolean;  // true while /api/admin/tables is in-flight
     tables: { name: string; rowCount: number; hasUpdatedOn?: boolean; hasExpiry?: boolean; hasType?: boolean }[];
     selected: string;
     loading: boolean;
@@ -152,6 +153,7 @@ export default function Dashboard() {
     selectedType: string;
   }>({
     open: false,
+    tablesLoading: false,
     tables: [],
     selected: "",
     loading: false,
@@ -788,25 +790,34 @@ export default function Dashboard() {
   // REUSABLE: Pattern for any admin-level destructive action with confirmation.
   // ---------------------------------------------------------------------------
   const fetchDbTables = async () => {
+    // Open the modal IMMEDIATELY so the user sees instant feedback,
+    // then fetch table data in the background and populate the dropdown.
+    setClearDb(prev => ({
+      ...prev,
+      open: true,
+      tablesLoading: true,
+      tables: [],
+      selected: "",
+      result: "",
+      timestamps: [],
+      selectedTimestamp: "",
+      expiries: [],
+      selectedExpiry: "",
+      types: [],
+      selectedType: "",
+    }));
     try {
       const res = await fetch("http://127.0.0.1:8000/api/admin/tables");
       const data = await res.json();
       const tables = data.tables || [];
       setClearDb(prev => ({
         ...prev,
-        open: true,
+        tablesLoading: false,
         tables,
         selected: tables.length > 0 ? tables[0].name : "",
-        result: "",
-        timestamps: [],
-        selectedTimestamp: "",
-        expiries: [],
-        selectedExpiry: "",
-        types: [],
-        selectedType: "",
       }));
     } catch {
-      setClearDb(prev => ({ ...prev, open: true, tables: [], result: "Failed to fetch table list from backend." }));
+      setClearDb(prev => ({ ...prev, tablesLoading: false, result: "Failed to fetch table list from backend." }));
     }
   };
 
@@ -914,17 +925,28 @@ export default function Dashboard() {
             {/* Table Selector */}
             <div className="flex flex-col gap-1 mb-4">
               <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">Select Table to Clear</label>
-              <select
-                value={clearDb.selected}
-                onChange={(e) => setClearDb(prev => ({ ...prev, selected: e.target.value }))}
-                className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50"
-              >
-                {clearDb.tables.map(t => (
-                  <option key={t.name} value={t.name}>
-                    {t.name} ({t.rowCount} rows)
-                  </option>
-                ))}
-              </select>
+              {clearDb.tablesLoading ? (
+                /* Loading skeleton — shown while /api/admin/tables is in-flight */
+                <div className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-500 flex items-center gap-2 animate-pulse">
+                  <svg className="animate-spin h-4 w-4 text-red-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                  Loading tables…
+                </div>
+              ) : (
+                <select
+                  value={clearDb.selected}
+                  onChange={(e) => setClearDb(prev => ({ ...prev, selected: e.target.value }))}
+                  className="bg-surface-container-low border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50"
+                >
+                  {clearDb.tables.map(t => (
+                    <option key={t.name} value={t.name}>
+                      {t.name} ({t.rowCount} rows)
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {/* Filter Selectors Container */}
@@ -2411,7 +2433,7 @@ export default function Dashboard() {
                     onClick={() => setSvActiveReportType("summary")}
                     className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${svActiveReportType === "summary" ? "bg-primary text-black" : "bg-white/5 text-slate-400 hover:text-white border border-white/10"}`}
                   >
-                    Trade Log
+                    Summary Report
                   </button>
                   <button
                     id="sv-tab-validation"
@@ -2424,8 +2446,9 @@ export default function Dashboard() {
                   <button
                     id="sv-export-excel"
                     onClick={() => {
-                      if (!svReport?.id) return;
-                      const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${svReport.id}&reportType=${svActiveReportType}`;
+                      const exportId = svReport?.id || svReport?.reportId;
+                      if (!exportId) return;
+                      const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${exportId}&reportType=${svActiveReportType}`;
                       const a = document.createElement("a");
                       a.href = url; a.click();
                     }}

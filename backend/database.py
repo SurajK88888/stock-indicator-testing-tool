@@ -15,6 +15,7 @@ adding columns to a live database.
 """
 
 import sqlite3
+from sqlalchemy import event
 from sqlmodel import SQLModel, create_engine, Session
 from models import OptionsData, IndicatorData, ValidationReport, BacktestTrade, SignalValidationReport
 
@@ -24,6 +25,18 @@ sqlite_url = f"sqlite:///{sqlite_file_name}"
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(sqlite_url, echo=False, connect_args=connect_args)
+
+
+# REUSABLE: WAL mode allows concurrent readers + one writer without blocking.
+# busy_timeout=15000 → SQLite will retry for up to 15 seconds before raising
+# "database is locked", instead of failing immediately.
+# Apply to every new DB connection via SQLAlchemy event hook.
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, _):
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA busy_timeout=15000;")
+    cursor.close()
 
 
 def _run_migrations():

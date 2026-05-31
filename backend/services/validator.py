@@ -113,8 +113,18 @@ def _format_duration(entry_dt: datetime, exit_dt: datetime) -> str:
 
 
 def _run_validation(job_id: str, req: ValidateRequest, db_url: str):
+    from sqlalchemy import event
     from sqlmodel import create_engine
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
+
+    # REUSABLE: Same WAL + busy_timeout pattern as database.py main engine.
+    # Prevents "database is locked" when validation runs alongside ingestion.
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=15000;")
+        cursor.close()
     
     try:
         with Session(engine) as session:

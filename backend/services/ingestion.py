@@ -428,12 +428,16 @@ async def ingest_data(
         except Exception:
             continue  # Skip malformed rows silently
 
-    # Step 8: Bulk insert using session.add_all() ΓÇö SQLModel/SQLAlchemy 2.x compatible
-    # KNOWN BUG: Never use session.bulk_save_objects() ΓÇö deprecated in SQLAlchemy 2.x
+    # Step 8: Bulk insert using chunked add_all() — SQLModel/SQLAlchemy 2.x compatible.
+    # REUSABLE: Chunk size of 50,000 keeps each transaction short, reducing the time
+    # the write lock is held and preventing "database is locked" errors under concurrency.
+    # KNOWN BUG AVOIDED: Never use session.bulk_save_objects() — deprecated in SQLAlchemy 2.x
+    CHUNK_SIZE = 50_000
     if instances:
         try:
-            session.add_all(instances)
-            session.commit()
+            for i in range(0, len(instances), CHUNK_SIZE):
+                session.add_all(instances[i : i + CHUNK_SIZE])
+                session.commit()
         except Exception as e:
             session.rollback()
             return {"error": f"Database insert failed: {str(e)}"}

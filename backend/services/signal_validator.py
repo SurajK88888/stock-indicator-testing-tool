@@ -143,8 +143,8 @@ def _format_dt(dt: Optional[datetime]) -> Optional[str]:
 
 
 def _format_time(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetime as 'HH:MM' string, or '-'."""
-    return dt.strftime("%H:%M") if dt else "-"
+    """Format datetime as 'YYYY-MM-DD HH:MM:SS' string, or '-'."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
 
 
 def _last_candle_of_day(candles_by_date: dict, target_date: date) -> Optional[OptionsData]:
@@ -353,17 +353,53 @@ def _run_trade(
         total_exit_value = round(l1_exit_value + l2_exit_value, 2)
         net_pnl = round(total_exit_value - trade_value_entry, 2)
         pnl_pct = round((net_pnl / trade_value_entry * 100), 4) if trade_value_entry else 0
-        exit_price_combined = round((l1_exit_price or 0) + (l2_exit_price or 0), 4)
+        l1_val = l1_exit_price or 0
+        l2_val = l2_exit_price or 0
+        exit_price_combined = round(((l1_val * qty) / 2) + ((l2_val * qty) / 2), 4)
 
-        # Trade summary
-        if l1_exit_price == sl_value or l2_exit_price == current_sl:
-            summary_text = "Trade Closed at Stop Loss"
-        elif l2_exit_price == highest_t_value:
-            summary_text = "Highest Target Achieved"
-        elif last_hit_target_value:
-            summary_text = f"Trade Closed at Trailing Stop Loss"
-        else:
-            summary_text = "Trade Closed at End-of-Day"
+        # Fix: If original SL was never directly breached but Lot-2 exited via trailing SL,
+        # capture that exit time as sl_hit_time so the SL column shows a datetime.
+        if sl_hit_time is None and l2_exit_price == current_sl and l2_exit_time is not None:
+            sl_hit_time = l2_exit_time
+
+        # Trade summary — structured Part-1/Part-2 format (dynamic, no hardcoding)
+        def _leg_reason(exit_price, ref_sl, ref_t1, ref_highest, ref_last_hit, is_lot2=False):
+            """Returns a human-readable exit reason string for one trade leg.
+            Reusable: format follows Part-1/Part-2 trade summary specification.
+            Part-1 exits: Stoploss Hit | Target-1 Hit | Trade Closed at EOD
+            Part-2 exits: Stoploss Hit | Target-Max Hit | Trailing Stoploss Hit | Trade Closed at EOD
+            """
+            if exit_price is None:
+                return "Open"
+            val = f"({round(exit_price, 2)})"
+            # Original SL hit (Lot-1 or Lot-2 before any target crossed)
+            if exit_price == ref_sl:
+                return f"Stoploss Hit {val}"
+            # Lot-1 only: T1 exit
+            if ref_t1 is not None and not is_lot2 and exit_price == ref_t1:
+                return f"Target-1 Hit {val}"
+            # Lot-2 only: highest/max target hit
+            if ref_highest is not None and exit_price == ref_highest:
+                return f"Target-Max Hit {val}"
+            # Lot-2 only: trailing SL triggered after at least one target crossed
+            if is_lot2 and ref_last_hit is not None and exit_price == current_sl:
+                return f"Trailing Stoploss Hit {val}"
+            # Check if exit_price matches any named target (T1–T10) — covers edge cases
+            for _, t_val in all_targets:
+                if exit_price == t_val:
+                    idx_match = next((i for i, v in all_targets if v == t_val), None)
+                    if idx_match is not None:
+                        label = "Target-1" if idx_match == 1 else f"Target-{idx_match}"
+                        return f"{label} Hit {val}"
+            # Lot-2 fallback: trailing SL hit with no prior confirmed last target
+            if is_lot2 and exit_price == current_sl:
+                return f"Trailing Stoploss Hit {val}"
+            # Final fallback: closed at end of day
+            return f"Trade Closed at EOD {val}"
+
+        p1_reason = _leg_reason(l1_exit_price, sl_value, t1_value, highest_t_value, last_hit_target_value, is_lot2=False)
+        p2_reason = _leg_reason(l2_exit_price, current_sl, None, highest_t_value, last_hit_target_value, is_lot2=True)
+        summary_text = f"Part-1: {p1_reason}\nPart-2: {p2_reason}"
 
     # ====================================================================
     # SINGLE TRADE MODE
@@ -456,14 +492,22 @@ def _run_trade(
         net_pnl = round(total_exit_value - trade_value_entry, 2)
         pnl_pct = round((net_pnl / trade_value_entry * 100), 4) if trade_value_entry else 0
 
-        if l1_exit_price == sl_value or l1_exit_price == current_sl:
-            summary_text = "Trade Closed at Stop Loss"
-        elif l1_exit_price == highest_t_value:
-            summary_text = "Highest Target Achieved"
-        elif last_hit_target_value:
-            summary_text = "Trade Closed at Trailing Stop Loss"
+        # Single Trade mode — single-line summary (dynamic, no hardcoding)
+        if l1_exit_price is None:
+            summary_text = "Open"
+        elif l1_exit_price == sl_value or (last_hit_target_value is None and l1_exit_price == current_sl):
+            summary_text = f"SL Hit at {round(l1_exit_price, 2)}"
+        elif highest_t_value is not None and l1_exit_price == highest_t_value:
+            summary_text = f"Highest Target Hit at {round(l1_exit_price, 2)}"
+        elif last_hit_target_value is not None and l1_exit_price == current_sl:
+            summary_text = f"Trailing SL Hit at {round(l1_exit_price, 2)}"
         else:
-            summary_text = "Trade Closed at End-of-Day"
+            # Check if exit_price matches any target value
+            matched_t = next((f"T{idx}" for idx, t_val in all_targets if l1_exit_price == t_val), None)
+            if matched_t:
+                summary_text = f"{matched_t} Hit at {round(l1_exit_price, 2)}"
+            else:
+                summary_text = f"Day Closed at {round(l1_exit_price, 2)}"
 
     # ====================================================================
     # Build Report Rows
@@ -875,8 +919,17 @@ def export_signal_report_excel(
     # Data rows
     profit_font = Font(color="4EDEA3", bold=True)
     loss_font = Font(color="FF4444", bold=True)
+    ROUND_2DP = {"l1_exit_price", "l2_exit_price", "exit_price", "pnl_pct"}
     for trade in trades:
-        row = [trade.get(k, "") for k in row_keys]
+        row = []
+        for k in row_keys:
+            val = trade.get(k, "")
+            if val != "" and val is not None and k in ROUND_2DP:
+                try:
+                    val = round(float(val), 2)
+                except (ValueError, TypeError):
+                    pass
+            row.append(val)
         ws.append(row)
         # Colour Net P&L cell
         pnl_idx = row_keys.index("net_pnl") if "net_pnl" in row_keys else row_keys.index("trade_pnl") if "trade_pnl" in row_keys else None
@@ -889,6 +942,10 @@ def export_signal_report_excel(
             pct_cell = ws.cell(row=ws.max_row, column=row_keys.index("pnl_pct") + 1)
             if pct_cell.value != "" and pct_cell.value is not None:
                 pct_cell.value = f"{pct_cell.value}%"
+        # Enable text wrap for Trade Summary so Part-1/Part-2 lines render correctly
+        if "trade_summary" in row_keys:
+            summary_cell = ws.cell(row=ws.max_row, column=row_keys.index("trade_summary") + 1)
+            summary_cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     # Auto column width
     for col in ws.columns:

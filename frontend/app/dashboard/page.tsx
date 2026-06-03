@@ -1757,16 +1757,16 @@ export default function Dashboard() {
                       </select>
                     </div>
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Trade Amount (Lots) <InfoTooltip text="Number of lots. Must be even for Split Rule." /></label>
-                      <input id="sv-trade-amount" type="number" min={1} value={svConfig.trade_amount} onChange={e => setSvConfig({ ...svConfig, trade_amount: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50" />
-                      {svConfig.lot_split_rule === "Split Rule" && parseInt(svConfig.trade_amount) % 2 !== 0 && <p className="text-[10px] text-amber-400 mt-1">Split Rule requires even lots.</p>}
-                    </div>
-                    <div className="flex flex-col gap-1">
                       <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Lot Split Rule <InfoTooltip text="Split Rule: Lot-1 exits T1, Lot-2 trails SL to highest target. Single Trade: all lots together." /></label>
                       <select id="sv-lot-split-rule" value={svConfig.lot_split_rule} onChange={e => setSvConfig({ ...svConfig, lot_split_rule: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50">
                         <option value="Single Trade">Single Trade</option>
                         <option value="Split Rule">Split Rule</option>
                       </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Trade Amount (Lots) <InfoTooltip text="Number of lots. Must be even for Split Rule." /></label>
+                      <input id="sv-trade-amount" type="number" min={1} value={svConfig.trade_amount} onChange={e => setSvConfig({ ...svConfig, trade_amount: e.target.value })} className="bg-surface-container-low border border-white/10 rounded px-3 py-3 text-sm text-white focus:outline-none focus:border-primary/50" />
+                      {svConfig.lot_split_rule === "Split Rule" && parseInt(svConfig.trade_amount) % 2 !== 0 && <p className="text-[10px] text-amber-400 mt-1">Split Rule requires even lots.</p>}
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="text-xs text-slate-400 font-bold uppercase tracking-wider flex items-center">Closing Open Positions <InfoTooltip text="Intraday: close at last candle same day. BTST: close at last candle next day." /></label>
@@ -2426,43 +2426,27 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Report Type Toggle */}
-                <div className="flex gap-2 items-center">
-                  <button
-                    id="sv-tab-summary"
-                    onClick={() => setSvActiveReportType("summary")}
-                    className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${svActiveReportType === "summary" ? "bg-primary text-black" : "bg-white/5 text-slate-400 hover:text-white border border-white/10"}`}
-                  >
-                    Summary Report
-                  </button>
-                  <button
-                    id="sv-tab-validation"
-                    onClick={() => setSvActiveReportType("validation")}
-                    className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${svActiveReportType === "validation" ? "bg-primary text-black" : "bg-white/5 text-slate-400 hover:text-white border border-white/10"}`}
-                  >
-                    Signal Validation Report
-                  </button>
-                  {/* Excel Export for signal reports */}
-                  <button
-                    id="sv-export-excel"
-                    onClick={() => {
-                      const exportId = svReport?.id || svReport?.reportId;
-                      if (!exportId) return;
-                      const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${exportId}&reportType=${svActiveReportType}`;
-                      const a = document.createElement("a");
-                      a.href = url; a.click();
-                    }}
-                    className="ml-auto flex items-center gap-2 bg-green-900/40 border border-green-500/40 hover:border-green-400 text-green-400 hover:text-green-300 px-4 py-2 rounded-lg text-xs font-bold transition-all"
-                  >
-                    <FileText size={13} /> Download Excel (.xlsx)
-                  </button>
-                </div>
-
                 {/* Summary Report Table (Report 1 — shows target VALUES) */}
-                {svActiveReportType === "summary" && (
-                  <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-50" />
-                    <p className="text-[10px] text-slate-500 mb-3">T1–T10 columns show <strong className="text-primary">target values</strong>. SL column shows the signal SL value.</p>
+                <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden mt-6">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-50" />
+                  <div className="flex justify-between items-center mb-3 flex-wrap gap-3">
+                    <div>
+                      <h3 className="text-lg font-bold">Signal Summary Report</h3>
+                      <p className="text-[10px] text-slate-500">T1–T10 columns show <strong className="text-primary">target values</strong>. SL column shows the signal SL value.</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const exportId = svReport?.id || svReport?.reportId;
+                        if (!exportId) return;
+                        const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${exportId}&reportType=summary`;
+                        const a = document.createElement("a");
+                        a.href = url; a.click();
+                      }}
+                      className="flex items-center gap-2 bg-green-900/40 border border-green-500/40 hover:border-green-400 text-green-400 hover:text-green-300 px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <FileText size={13} /> Download Summary Excel
+                    </button>
+                  </div>
                     <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded-lg border border-white/10">
                       <table className="w-full text-left text-xs text-slate-300 min-w-[1400px]">
                         <thead className="text-[10px] uppercase bg-surface-container-low text-slate-400 sticky top-0 z-10">
@@ -2498,7 +2482,7 @@ export default function Dashboard() {
                                   <td className="px-3 py-2 text-right font-mono">{t.l2_exit_price?.toFixed ? t.l2_exit_price.toFixed(2) : t.l2_exit_price}</td>
                                   <td className="px-3 py-2 text-right font-mono">{t.exit_price?.toFixed ? t.exit_price.toFixed(2) : t.exit_price}</td>
                                   <td className={`px-3 py-2 text-right font-mono font-bold ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.net_pnl?.toFixed ? t.net_pnl.toFixed(2) : t.net_pnl}</td>
-                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(4) : t.pnl_pct}%</td>
+                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(2) : t.pnl_pct}%</td>
                                 </tr>
                               );
                             })
@@ -2507,13 +2491,28 @@ export default function Dashboard() {
                       </table>
                     </div>
                   </div>
-                )}
 
                 {/* Signal Validation Report Table (Report 2 — shows target HIT TIMES) */}
-                {svActiveReportType === "validation" && (
-                  <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-signal/50 to-transparent opacity-50" />
-                    <p className="text-[10px] text-slate-500 mb-3">T1–T10 columns show <strong className="text-primary">hit times</strong> (HH:MM). SL column shows <strong className="text-primary">time SL was hit</strong>. "−" means not hit.</p>
+                <div className="glass-card border border-white/5 p-4 rounded-xl relative overflow-hidden mt-6">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-signal/50 to-transparent opacity-50" />
+                  <div className="flex justify-between items-center mb-3 flex-wrap gap-3">
+                    <div>
+                      <h3 className="text-lg font-bold">Signal Validation Report</h3>
+                      <p className="text-[10px] text-slate-500">T1–T10 columns show <strong className="text-primary">hit dates & times</strong> (YYYY-MM-DD HH:MM:SS). SL column shows <strong className="text-primary">date & time SL was hit</strong>. "−" means not hit.</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const exportId = svReport?.id || svReport?.reportId;
+                        if (!exportId) return;
+                        const url = `http://127.0.0.1:8000/api/signal-validate/export-excel?resultId=${exportId}&reportType=validation`;
+                        const a = document.createElement("a");
+                        a.href = url; a.click();
+                      }}
+                      className="flex items-center gap-2 bg-green-900/40 border border-green-500/40 hover:border-green-400 text-green-400 hover:text-green-300 px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <FileText size={13} /> Download Validation Excel
+                    </button>
+                  </div>
                     <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded-lg border border-white/10">
                       <table className="w-full text-left text-xs text-slate-300 min-w-[1600px]">
                         <thead className="text-[10px] uppercase bg-yellow-400/90 text-black sticky top-0 z-10">
@@ -2548,9 +2547,9 @@ export default function Dashboard() {
                                   <td className="px-3 py-2 text-[10px]">{(t.l2_exit_time || "").replace("T", " ")}</td>
                                   <td className="px-3 py-2 text-right font-mono">{t.l2_exit_price?.toFixed ? t.l2_exit_price.toFixed(2) : t.l2_exit_price}</td>
                                   <td className="px-3 py-2 text-right font-mono">{t.trade_amount_at_exit?.toFixed ? t.trade_amount_at_exit.toFixed(2) : t.trade_amount_at_exit}</td>
-                                  <td className="px-3 py-2 text-slate-300 text-[10px] max-w-[180px]">{t.trade_summary}</td>
+                                  <td className="px-3 py-2 text-slate-300 text-[10px] max-w-[180px] whitespace-pre-line">{t.trade_summary}</td>
                                   <td className={`px-3 py-2 text-right font-mono font-bold ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.trade_pnl?.toFixed ? t.trade_pnl.toFixed(2) : t.trade_pnl}</td>
-                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(4) : t.pnl_pct}%</td>
+                                  <td className={`px-3 py-2 text-right font-mono ${pnlPos ? "text-primary" : "text-red-400"}`}>{pnlPos ? "+" : ""}{t.pnl_pct?.toFixed ? t.pnl_pct.toFixed(2) : t.pnl_pct}%</td>
                                 </tr>
                               );
                             })
@@ -2559,7 +2558,6 @@ export default function Dashboard() {
                       </table>
                     </div>
                   </div>
-                )}
               </div>
             )}
 

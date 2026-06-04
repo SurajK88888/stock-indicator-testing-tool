@@ -79,34 +79,54 @@ def _price_from_candle(candle: OptionsData, price_point: str) -> float:
     return round(mapping.get(price_point, candle.close), 4)
 
 
-def _get_entry_price(candle: OptionsData, signal_entry_price: float, on_jump: str, entry_value_if_jump: str):
+# Entry types that require price to cross ABOVE the signal price before entry.
+# REUSABLE: extend this set if new above-style entry types are added in future.
+_ABOVE_ENTRY_TYPES = {"Above"}
+
+
+def _get_entry_price(
+    candle: OptionsData,
+    signal_entry_price: float,
+    on_jump: str,
+    entry_value_if_jump: str,
+    signal_entry_type: str = "At",
+):
     """
     Determines final entry price from candle and signal entry price.
 
-    Entry Rule (confirmed by user):
+    Entry Rule:
     1. If signal_entry_price is within candle OHLC (low <= price <= high) → use signal_entry_price
     2. If candle is ABOVE entry price (candle low > signal_entry_price) → Jump Rule:
        - "Drop Signal" → return None (skip)
-       - "Trade" → use the selected price point
-    3. If candle is BELOW entry price (candle high < signal_entry_price) → enter at candle close
+       - "Trade"       → use the selected price point (entry_value_if_jump)
+    3. If candle is BELOW entry price (candle high < signal_entry_price):
+       - signal_entry_type in _ABOVE_ENTRY_TYPES (e.g. "Above") → price never crossed;
+         drop the signal (return None).
+       - All other entry types ("At", "Buy At", etc.) → enter at candle close.
 
     Returns: (entry_price: float | None, jump_applied: bool)
-    None means signal should be dropped.
+    None means the signal should be dropped entirely.
+    REUSABLE: Add new entry-type semantics via _ABOVE_ENTRY_TYPES or a similar set.
     """
     lo, hi = candle.low, candle.high
 
-    # Case 1: entry_price is within OHLC range
+    # Case 1: signal entry price is within the candle's OHLC range
     if lo <= signal_entry_price <= hi:
         return signal_entry_price, False
 
-    # Case 2: candle is ABOVE entry price (candle low > signal entry price)
+    # Case 2: candle opened/traded entirely ABOVE the signal price (upward gap / jump)
     if lo > signal_entry_price:
         if on_jump == "Drop Signal":
-            return None, True   # Drop this signal
+            return None, True   # Drop this signal per user's jump rule
         else:
             return _price_from_candle(candle, entry_value_if_jump), True
 
-    # Case 3: candle is BELOW entry price (candle high < signal entry price)
+    # Case 3: candle is entirely BELOW the signal entry price (candle.high < signal_entry_price)
+    # For "Above" entry type: price never crossed the required level → drop the signal.
+    if signal_entry_type in _ABOVE_ENTRY_TYPES:
+        return None, False   # Signal dropped — price did not reach entry level
+
+    # For all other entry types ("At", "Buy At", etc.): enter at candle close.
     return candle.close, False
 
 
@@ -188,11 +208,14 @@ def _run_trade(
         entry_candle = candles[0]
 
     # --- Entry Price ---
+    # Pass signal.entry_type dynamically so _get_entry_price can apply
+    # the correct entry semantics (e.g. "Above" requires price to cross the level).
     final_entry_price, jump_applied = _get_entry_price(
-        entry_candle, signal.entry_price, req.on_jump, req.entry_value_if_jump
+        entry_candle, signal.entry_price, req.on_jump, req.entry_value_if_jump,
+        signal_entry_type=signal.entry_type,
     )
     if final_entry_price is None:
-        return None, None   # Signal dropped due to jump rule
+        return None, None   # Signal dropped (jump rule or entry type not met)
 
     entry_time = entry_candle.dateTime
     entry_type_label = req.entry_time + (" (Jump)" if jump_applied else "")
